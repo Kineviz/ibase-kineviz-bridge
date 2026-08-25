@@ -212,3 +212,47 @@ A `SELECT`-only login, **and** the bridge refusing any statement not beginning w
 The second is not redundant. It turns a future bug in the query generator into a loud crash
 rather than a write, and it lets the user see *"this bridge only reads"* instead of a SQL Server
 permission error. It also fails safe when someone misconfigures the connection to use `sa`.
+
+
+---
+
+## Letting Kineviz in the browser reach a bridge on localhost
+
+The bridge runs on the analyst's machine; Kineviz in the browser is served from the web.
+Browsers guard that boundary, and the first version of this repo dodged the problem by telling
+people to install Desktop. That is a 200 MB download to avoid a header.
+
+There are two separate gates, and both must open.
+
+**The preflight.** Before a public https:// page may reach a private address, Chrome sends an
+extra preflight carrying `Access-Control-Request-Private-Network: true`. Ordinary CORS handling
+does not know that header, and Starlette rejected it outright:
+
+```
+$ curl -X OPTIONS http://localhost:7073/health \
+    -H "Origin: https://example.com" \
+    -H "Access-Control-Request-Private-Network: true"
+HTTP/1.1 400 Bad Request
+Disallowed CORS private-network
+```
+
+`PrivateNetworkAccess` in `ibase_server.py` answers it with
+`Access-Control-Allow-Private-Network: true` — **for allowed origins only** (200 for a Kineviz
+origin, 403 for anything else, both verified).
+
+**The permission prompt.** From Chrome 138 the browser also asks the *person* before a public
+site may reach their machine. Until they answer, the request simply hangs — nothing arrives at
+the server at all, and there is no console error to explain it. On Chrome 151 that is exactly
+what happens: `127.0.0.1`, `localhost` and `[::1]` all time out with the bridge's log showing
+no request. It is not a bug in the bridge, and no server-side header can substitute for the
+person clicking Allow.
+
+**So the honest statement is:** the preflight fix is verified; the full round trip through a
+browser is not, because it needs a human to grant the prompt. If the schema never loads **and
+no prompt appeared**, that browser is refusing rather than asking, and Desktop is the fix.
+
+**Why the allowlist.** Answering the private-network preflight deliberately relaxes the one
+thing that was stopping arbitrary web pages from reaching this bridge, and the bridge has no
+password of its own. So the same change narrowed CORS from `.*` to Kineviz origins plus
+localhost, with `--allow-origin` for a self-hosted Kineviz. Widening it back to `*` would let
+any page a browser opens read whatever the SQL login can read.

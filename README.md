@@ -44,8 +44,8 @@ To Kineviz it looks like an ordinary graph database, so nothing inside Kineviz h
    On macOS: `brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release`
    then `brew trust microsoft/mssql-release && brew install msodbcsql18`.
 4. **A Kineviz account** — [sign up](https://www.kineviz.com/). Only needed at the last step.
-5. **Kineviz**, either in the browser or as Desktop — see below. Desktop is **free for
-   individual use, forever**.
+5. **Kineviz** — in the browser at <https://graphxr.kineviz.com/>, or as Desktop. Either
+   works; nothing to install for the browser. See below.
 
 ## Quick start
 
@@ -75,22 +75,35 @@ type that joins several different kinds of record.
 
 ## Kineviz: browser or Desktop
 
-**Use Desktop if you can.** The bridge listens on `http://localhost`, and a browser tab served
-over HTTPS may refuse to call a plain-http address on the same machine. Chrome usually allows
-`localhost`; Safari and Firefox may not. When it is blocked the schema simply never loads,
-which looks exactly like a broken bridge — a confusing failure rather than an obvious one.
+Both work. Pick whichever suits you.
 
 | | Kineviz in the browser | Kineviz Desktop |
 | --- | --- | --- |
 | Where | <https://graphxr.kineviz.com/> | [download](https://github.com/Kineviz/kineviz-desktop/releases/latest) |
-| Install | nothing | ~200 MB |
-| A bridge on `localhost` | may be blocked, depending on the browser | always works |
+| To install | nothing | ~200 MB |
+| Reaching a bridge on this machine | your browser asks permission the first time — click **Allow** | works straight away |
 | Cost | account required | free for individual use, forever; sign-in required |
 
-Both need a Kineviz account — [sign up](https://www.kineviz.com/) — and neither the bridge nor
-an agent can create one for you.
+Both need a Kineviz account — [sign up](https://www.kineviz.com/).
 
-Desktop builds, by machine:
+**If you use the browser**, note that the bridge runs on your own machine while Kineviz is
+served from the web, and browsers guard that boundary. Chrome 138 and later show a permission
+prompt the first time — allow it, and the connection works from then on. The bridge answers
+the check browsers make beforehand, but only for Kineviz and for this machine; if you host
+Kineviz somewhere else, add it:
+
+```bash
+python ibase_server.py --mapping config/mapping.demo.yml --allow-origin https://kineviz.example.com
+```
+
+That allowlist is deliberate. The bridge has no password of its own, so anything a browser can
+be persuaded to open could otherwise read whatever the SQL login can read.
+
+**If the schema never loads in the browser** and you saw no prompt, your browser is refusing
+the connection rather than asking about it. Desktop avoids the question — that is the only
+reason to prefer it.
+
+**Desktop builds**, by machine:
 
 | Your machine | File |
 | --- | --- |

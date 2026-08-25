@@ -25,8 +25,12 @@ import sys
 import time
 import traceback
 
+import re
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import PlainTextResponse, Response
 
 from ibase_bridge import envelope, mapping as mapping_mod, query_log, tsql
 from ibase_bridge.logging_setup import setup_logging
@@ -101,12 +105,83 @@ def build_state(args):
     return state
 
 
-def create_app(state, studio: bool = False):
+# Origins allowed to call this bridge from a browser. Kineviz in the browser is
+# served from these; the localhost entries are the bridge's own schema editor.
+#
+# This is an allowlist rather than "*" for a reason worth stating. The bridge has no
+# authentication, so any page a browser can be persuaded to open could otherwise
+# read everything the SQL login can read. Until now the only thing preventing that
+# was Chrome refusing to let a public site reach localhost at all - and the fix
+# below deliberately relaxes exactly that. So the two changes belong together.
+DEFAULT_ALLOWED_ORIGINS = [
+    r"https://([a-z0-9-]+\.)*kineviz\.com",
+    r"https?://localhost(:\d+)?",
+    r"https?://127\.0\.0\.1(:\d+)?",
+    r"https?://\[::1\](:\d+)?",
+]
+
+
+class PrivateNetworkAccess(BaseHTTPMiddleware):
+    """Let a browser page reach this bridge on localhost.
+
+    Chrome treats a request from a public https:// page to localhost as "private
+    network access" and sends an extra preflight carrying
+    `Access-Control-Request-Private-Network: true`. Ordinary CORS handling does not
+    know about that header and rejects the preflight with
+    "Disallowed CORS private-network" - which the page sees as a request that never
+    completes. The symptom is a schema that never loads, with nothing to explain it.
+
+    Answering the preflight with `Access-Control-Allow-Private-Network: true` is what
+    makes Kineviz in the browser work against a bridge on this machine. We answer it
+    only for origins on the allowlist, never for any site that asks.
+    """
+
+    def __init__(self, app, origin_pattern):
+        super().__init__(app)
+        self._allowed = re.compile("^(" + "|".join(origin_pattern) + ")$", re.IGNORECASE)
+
+    def _ok(self, origin: str) -> bool:
+        return bool(origin) and bool(self._allowed.match(origin))
+
+    async def dispatch(self, request, call_next):
+        origin = request.headers.get("origin", "")
+        wants_private = request.headers.get(
+            "access-control-request-private-network", "").lower() == "true"
+
+        if request.method == "OPTIONS" and wants_private:
+            if not self._ok(origin):
+                return PlainTextResponse(
+                    "This bridge only accepts browser requests from Kineviz or from "
+                    "this machine. Start it with --allow-origin <url> to add another.",
+                    status_code=403)
+            return Response(status_code=200, headers={
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers":
+                    request.headers.get("access-control-request-headers", "*"),
+                "Access-Control-Allow-Private-Network": "true",
+                "Access-Control-Max-Age": "600",
+                "Vary": "Origin",
+            })
+
+        response = await call_next(request)
+        if self._ok(origin):
+            response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
+
+
+def create_app(state, studio: bool = False, allow_origins=None):
     app = FastAPI(title="iBase to Kineviz bridge", version="0.1.0")
+    patterns = list(DEFAULT_ALLOWED_ORIGINS) + [re.escape(o.rstrip("/"))
+                                                for o in (allow_origins or [])]
     # Reflect the caller's origin rather than sending "*": a browser rejects a
     # wildcard on a credentialed request and silently drops the response.
-    app.add_middleware(CORSMiddleware, allow_origin_regex=".*", allow_credentials=True,
-                       allow_methods=["*"], allow_headers=["*"])
+    app.add_middleware(CORSMiddleware, allow_origin_regex="^(" + "|".join(patterns) + ")$",
+                       allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+    # Added last, so it runs first and can answer the private-network preflight
+    # before ordinary CORS handling refuses it.
+    app.add_middleware(PrivateNetworkAccess, origin_pattern=patterns)
     db_name = state.db_name
 
     if studio:
@@ -165,6 +240,10 @@ def parse_args(argv=None):
                    help="file for remembered node ids (only needed when a key is neither "
                         "a number nor a prefix followed by digits)")
     p.add_argument("--ssl-cert"), p.add_argument("--ssl-key"), p.add_argument("--ssl-password")
+    p.add_argument("--allow-origin", action="append", default=[],
+                   help="also accept browser requests from this origin, e.g. "
+                        "https://my-kineviz.example.com. Kineviz and this machine are "
+                        "allowed already.")
     p.add_argument("--studio", action="store_true",
                    help="also serve the schema editor at /studio, for naming links and "
                         "checking their direction against real rows")
@@ -188,12 +267,13 @@ def main():
     host = "localhost" if args.host in ("127.0.0.1", "0.0.0.0", "::") else args.host
     url = "http://{}:{}/ibase/{}".format(host, args.port, name)
     state.public_url = url
-    app = create_app(state, studio=args.studio)
+    app = create_app(state, studio=args.studio, allow_origins=args.allow_origin)
     print("\n  iBase bridge is serving {} record types and {} link types."
           .format(len(state.backend.node_schemas), len(state.backend.rel_schemas)))
     print("\n  In Kineviz: Create -> Create New Project")
     print("      Database Type:  KoreDB Via Proxy API")
     print("      Proxy API URL:  {}".format(url))
+    print("\n  Works in Kineviz in the browser as well as in Desktop.")
     if args.studio:
         print("\n  Schema editor (name your links and check their direction):")
         print("      http://{}:{}/studio".format(host, args.port))

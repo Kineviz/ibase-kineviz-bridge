@@ -26,28 +26,36 @@ that is committed**, and never paste one into a message.
 1. **Do not create a Kineviz account.** Point the person at <https://www.kineviz.com/> and let
    them sign up.
 2. **Do not sign in to Kineviz for them**, in the browser or in Desktop.
-3. **Do not install Kineviz Desktop without asking.** Downloading and installing an
-   application is the person's decision. Tell them which build they need (see below), ask, and
-   only then help.
+3. **Do not install Kineviz Desktop without asking**, and do not assume they want it. The
+   browser needs no download. Ask which they prefer.
 
 Everything else here — the container, the databases, the read-only login, the mapping, the
 bridge — is yours to set up.
 
-## Which Kineviz: online or Desktop
+## Which Kineviz: browser or Desktop
 
-**Recommend Desktop.** The bridge listens on `http://localhost`, and a browser tab served over
-HTTPS may refuse to call a plain-http address on the same machine. Chrome usually allows
-`localhost`; Safari and Firefox may not. When it is blocked the schema simply never loads,
-which looks exactly like a broken bridge — so the failure is confusing rather than obvious.
+**Ask; do not assume.** Both work, and the browser needs nothing installed — do not push a
+200 MB download on someone who does not want one.
 
-Desktop sidesteps the question. It is **free for individual use, forever**, and needs a Kineviz
-sign-in.
+| | Browser | Desktop |
+| --- | --- | --- |
+| Install | nothing | ~200 MB |
+| Reaching a bridge on this machine | the browser asks permission the first time; the person clicks Allow | works straight away |
 
-If the person wants Desktop, work out which file they need and give them the link. Do not
-download it for them unless they ask:
+The bridge answers the check browsers make before allowing a web page to reach this machine,
+but only for Kineviz origins and for localhost. If the person hosts Kineviz elsewhere, add it
+with `--allow-origin <url>`. Do not widen that allowlist casually: the bridge has no password
+of its own.
+
+If they choose the browser and the schema never loads **and no prompt appeared**, their browser
+is refusing rather than asking. That is the point to suggest Desktop — not before.
+
+If they want Desktop, work out which file and give them the link. **Do not download or install
+it unless they ask you to.**
 
 ```bash
 uname -sm      # Darwin arm64 | Darwin x86_64 | Linux x86_64 | Linux aarch64
+gh api repos/Kineviz/kineviz-desktop/releases/latest --jq .tag_name
 ```
 
 | Their machine | Asset from [kineviz-desktop/releases](https://github.com/Kineviz/kineviz-desktop/releases/latest) |
@@ -57,16 +65,6 @@ uname -sm      # Darwin arm64 | Darwin x86_64 | Linux x86_64 | Linux aarch64
 | Windows | `Kineviz-Desktop-Setup-<ver>-win-x64.exe` (or `win-arm64`) |
 | Linux (deb) | `Kineviz-Desktop-<ver>-linux-amd64.deb` (or `linux-arm64`) |
 | Linux (other) | `Kineviz-Desktop-<ver>-linux-x86_64.AppImage` (or `linux-arm64`) |
-
-Check the latest version rather than assuming one:
-
-```bash
-gh api repos/Kineviz/kineviz-desktop/releases/latest --jq .tag_name
-```
-
-If they would rather use the browser at <https://graphxr.kineviz.com/>, that is fine — but tell
-them up front that a localhost bridge may not be reachable from it, and that Desktop is the fix
-if the schema never loads.
 
 ## Connecting Kineviz to the bridge
 

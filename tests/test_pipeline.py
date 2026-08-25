@@ -637,6 +637,52 @@ def test_sample_rows_shows_where_a_column_ends_up():
     assert r["table"].endswith("Person")
 
 
+# ------------------------------------------- reaching the bridge from a browser
+
+def _client(allow=None):
+    from fastapi.testclient import TestClient
+    import ibase_server
+    args = ibase_server.parse_args(["--mapping", DEMO, "--compile-only"])
+    state = ibase_server.build_state(args)
+    return TestClient(ibase_server.create_app(state, studio=True, allow_origins=allow or []))
+
+
+def _preflight(c, origin):
+    return c.options("/ibase/demo", headers={
+        "Origin": origin,
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Private-Network": "true"})
+
+
+def test_kineviz_in_the_browser_may_reach_a_bridge_on_this_machine():
+    """Chrome sends an extra preflight before a public https page may reach a private
+    address. Without an answer to it the request never completes, and the symptom is a
+    schema that never loads with nothing to explain it."""
+    r = _preflight(_client(), "https://graphxr.kineviz.com")
+    assert r.status_code == 200, r.text
+    assert r.headers.get("access-control-allow-private-network") == "true"
+    assert r.headers.get("access-control-allow-origin") == "https://graphxr.kineviz.com"
+
+
+def test_a_random_website_may_not():
+    """Answering that preflight relaxes the one thing stopping arbitrary pages from
+    reaching this bridge, and the bridge has no password of its own."""
+    r = _preflight(_client(), "https://evil.example.com")
+    assert r.status_code == 403, r.status_code
+    assert "allow-origin" in r.text.lower() or "kineviz" in r.text.lower()
+
+
+def test_the_schema_editor_on_this_machine_still_works():
+    r = _preflight(_client(), "http://localhost:7073")
+    assert r.status_code == 200
+
+
+def test_a_self_hosted_kineviz_can_be_allowed():
+    r = _preflight(_client(allow=["https://kineviz.example.com"]), "https://kineviz.example.com")
+    assert r.status_code == 200
+    assert _preflight(_client(), "https://kineviz.example.com").status_code == 403
+
+
 def _run_all():
     fns = [(n, f) for n, f in sorted(globals().items())
            if n.startswith("test_") and callable(f)]
