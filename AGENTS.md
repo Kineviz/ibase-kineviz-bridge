@@ -9,6 +9,10 @@ This repo is a **bridge**: it makes an i2 iBase database on Microsoft SQL Server
 graph database to Kineviz. Your job is to stand it up so a person can explore their graph.
 **You do not explore it for them.**
 
+> Walking a person through this for the first time? **[docs/quickstart.md](docs/quickstart.md)**
+> is that walkthrough, with the numbers it actually produces. Follow it rather than inventing
+> your own order, and send them the link instead of retyping the steps.
+
 ## Start here
 
 ```bash

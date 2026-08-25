@@ -1,6 +1,7 @@
 # Quick start
 
-**Fifteen minutes, from nothing to a graph you can click around.** No iBase licence and no real
+**Fifteen minutes, from nothing to a graph you can click around.** You need Docker, Python, and
+a Kineviz account — everything else the setup script installs. No iBase licence and no real
 data — `./setup` builds a demo database that has the shapes a real one has.
 
 Everything below was run exactly as written, against
@@ -35,9 +36,38 @@ who works for whom, who owns which account, and money moving between accounts.
 
 ---
 
-## 2. Connect Kineviz
+## 2. Get Kineviz
 
-Sign in at <https://graphxr.kineviz.com/> (or open Kineviz Desktop — either works).
+**If you already have a Kineviz account and it is open, skip to step 3.**
+
+**Create an account** at <https://www.kineviz.com/> if you do not have one. It is the same
+account for the browser and for Desktop.
+
+**Then pick one.** Both work, and nothing here depends on which:
+
+| | Kineviz in the browser | Kineviz Desktop |
+| --- | --- | --- |
+| Where | <https://graphxr.kineviz.com/> | [download](https://github.com/Kineviz/kineviz-desktop/releases/latest) |
+| To install | nothing | ~200 MB |
+| Reaching the bridge on this machine | your browser asks permission once — click **Allow** | works straight away |
+| Cost | account required | free for individual use, forever |
+
+The browser is the quicker start — nothing to download. Desktop is worth it if you would rather
+not deal with the permission prompt, or if your browser refuses rather than asks (see below).
+
+If you want Desktop, `uname -sm` tells you which build:
+
+| Your machine | File |
+| --- | --- |
+| Apple Silicon Mac | `Kineviz-Desktop-<ver>-mac-arm64.dmg` |
+| Intel Mac | `Kineviz-Desktop-<ver>-mac-x64.dmg` |
+| Windows | `Kineviz-Desktop-Setup-<ver>-win-x64.exe` |
+| Linux (Debian/Ubuntu) | `Kineviz-Desktop-<ver>-linux-amd64.deb` |
+| Linux (other) | `Kineviz-Desktop-<ver>-linux-x86_64.AppImage` |
+
+---
+
+## 3. Connect Kineviz to the bridge
 
 **Create → Create New Project**, then two fields:
 
@@ -64,7 +94,7 @@ Account) and **3 link types** (WORKS_FOR, OWNS, TRANSFERRED_TO).
 
 ---
 
-## 3. Pull some nodes and relationships
+## 4. Pull some nodes and relationships
 
 Open the **Query** panel — the `</>` icon in the left strip — and replace what is there with:
 
@@ -127,7 +157,7 @@ what you asked for.
 
 ---
 
-## 4. Select a few nodes and expand
+## 5. Select a few nodes and expand
 
 **Expand** is the question "what else do these connect to?", and it is the thing you will do
 most.
@@ -156,7 +186,7 @@ pull a little, expand, follow what looks interesting.
 
 ---
 
-## 5. Try the iBase-shaped database
+## 6. Try the iBase-shaped database
 
 The second demo database looks the way a real iBase database looks: one table per record type,
 string record ids like `PER0000123`, endpoints in a `_LinkEnd` system table, and a link type
@@ -181,24 +211,54 @@ Organization→Vehicle. The bridge runs a separate indexed query for each and me
 
 ---
 
-## 6. Point it at your own database
+## 7. Point it at your own database
 
-When you are ready to leave the demo behind:
+All of this happens in the editor at **<http://localhost:7073/studio>**.
 
-1. **Get a read-only login** — `SELECT` only, on the tables you are allowed to read.
-   `sql/020_readonly_login.sql` is a starting point. iBase schema changes go through iBase
-   Designer, never SQL.
-2. **Let the bridge read your schema:**
-   ```bash
-   python -m ibase_bridge.discovery --mapping-out mapping.proposed.yml
-   ```
-   It writes a draft — which tables look like records, which look like links, and for iBase link
-   tables, which record types they actually join.
-3. **Check it in the editor** at <http://localhost:7073/studio>. This is the step not to skip.
-   Two things no database can tell you: what each link is **called**, and which way it
-   **points**. A backwards link returns no rows rather than an error, so it is the mistake most
-   likely to go unnoticed. The editor runs every link both ways and shows you real rows.
-4. **Save, reload, and query.**
+**1. Get a read-only login.** `SELECT` only, on the tables you are allowed to read.
+`sql/020_readonly_login.sql` creates one. iBase schema changes go through iBase Designer, never
+SQL.
+
+**2. Point the bridge at your database.** In the editor, **Database → Connect a different
+database**. Fill in server, port, database and login, then **Test**:
+
+```
+✓ 2022 · Developer Edition (64-bit)
+  Fully supported.
+
+  version          16.0.4265.3
+  compatibility    160
+  tables           412
+  can it write?    ● no — writes are refused, which is what we want
+```
+
+Read that last line. It asks the server what your login may actually do, and warns you if the
+account can change data. **Test and use** switches the running bridge over without a restart.
+Your password is used to connect and then dropped — it is never written to a file. The panel
+shows the `export IBASE_CONNECTION_STRING=…` line for making it permanent.
+
+**3. Press Read the database.** It works out which tables are records and which are links, and
+for iBase link tables it asks the data which record types they actually join.
+
+**4. Name the links, and check their direction.** This is the step not to skip. Two things no
+database can tell you: what a link is **called**, and which way it **points**. A backwards link
+returns no rows rather than an error, so it is the mistake most likely to go unnoticed. The
+editor runs every link **both ways** against your data and shows you real rows:
+
+```
+WORKS_FOR    from Employment                        [flip ⇄] [check direction]
+Person ──▶ Organization
+
+  ✎ Both directions join, so the database cannot decide this one for you —
+    only you know which sentence is true. Read a row:
+    "Avery Chen → Northwind Logistics".
+```
+
+**5. Save mapping**, then **Reload bridge**. Your Kineviz project is now querying your own
+database.
+
+Prefer the command line? `python -m ibase_bridge.discovery --mapping-out mapping.proposed.yml`
+writes the same draft as a file for you to edit by hand.
 
 ---
 
