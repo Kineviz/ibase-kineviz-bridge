@@ -1,0 +1,77 @@
+# The generic demo schema from the connector specification (its section 4).
+# Nothing here is iBase-specific — this is the shape a plain SQL Server database
+# takes, and it is what the test suite runs against.
+version: 2
+
+source:
+  dialect: sqlserver
+  driver: "ODBC Driver 18 for SQL Server"
+  connection_env: IBASE_CONNECTION_STRING   # holds the connection string, never a password in this file
+  schema: dbo
+  query_timeout_seconds: 120
+  isolation_level: READ_UNCOMMITTED         # never block an analyst who is using iBase
+  pool_size: 8
+  encrypt: true
+  trust_server_certificate: false
+
+tuning:
+  id_list_inline_max: 200      # at or below this, a plain IN (?, ?, ...)
+  id_list_chunk_size: 1000     # if OPENJSON is unavailable, split into batches this big
+  max_branches: 64             # refuse a fan-out bigger than this instead of hanging
+  case_insensitive_like: auto
+
+nodes:
+  - label: Person
+    table: Person
+    key: person_id
+    properties: [full_name, date_of_birth, country_code, risk_score]
+    types:                       # real SQL types — see mapping.py on why this matters
+      person_id: bigint
+      full_name: nvarchar
+      date_of_birth: date
+      country_code: char
+      risk_score: decimal
+
+  - label: Organization
+    table: Organization
+    key: organization_id
+    properties: [name, industry, country_code]
+    types: {organization_id: bigint, name: nvarchar, industry: nvarchar, country_code: char}
+
+  - label: Account
+    table: Account
+    key: account_id
+    properties: [account_number, institution, country_code, opened_on]
+    types: {account_id: bigint, account_number: nvarchar, institution: nvarchar, country_code: char, opened_on: date}
+
+edges:
+  - type: WORKS_FOR
+    table: Employment
+    key: employment_id          # the edge's own key — keeps parallel links distinct
+    resolution: fk
+    endpoints:
+      - src: {label: Person,       column: person_id}
+        dst: {label: Organization, column: organization_id}
+    properties: [job_title, start_date, end_date]
+    types: {employment_id: bigint, job_title: nvarchar, start_date: date, end_date: date}
+
+  - type: OWNS
+    table: Ownership
+    key: ownership_id
+    resolution: fk
+    endpoints:
+      - src: {label: Person,  column: person_id}
+        dst: {label: Account, column: account_id}
+    properties: [ownership_pct]
+    types: {ownership_id: bigint, ownership_pct: decimal}
+
+  # Both ends are Accounts, so an undirected query has to look at this table twice.
+  - type: TRANSFERRED_TO
+    table: AccountTransfer
+    key: transfer_id
+    resolution: fk
+    endpoints:
+      - src: {label: Account, column: from_account_id}
+        dst: {label: Account, column: to_account_id}
+    properties: [amount, currency_code, transferred_at]
+    types: {transfer_id: bigint, amount: decimal, currency_code: char, transferred_at: datetime2}

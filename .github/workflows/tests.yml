@@ -1,0 +1,224 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # The translator, the id scheme, the mapping loader and the discovery rules all
+  # run with no database at all. That is deliberate: it keeps this job fast and it
+  # means a contributor can run the same tests locally with nothing installed.
+  unit:
+    name: tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install (PyYAML is the only thing the tests need)
+        run: python -m pip install --quiet PyYAML pytest
+
+      - run: python -m pytest -q
+
+      - name: Also run the way a contributor would, with no pytest
+        run: python tests/test_pipeline.py
+
+  # A real SQL Server, a real query, a real answer. The unit tests check the SQL we
+  # generate; this checks that SQL Server agrees. Several bugs got through the unit
+  # tests and were caught here, so it earns its minutes.
+  integration:
+    name: against a real SQL Server
+    runs-on: ubuntu-latest
+
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          # Derived from the run id rather than written down, so there is no
+          # password-shaped literal in a public repository for a secret scanner to
+          # flag. It guards a throwaway container that only this job can reach and
+          # that is destroyed when the job ends.
+          MSSQL_SA_PASSWORD: ${{ format('Ci{0}#Aa1', github.run_id) }}
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+          --health-start-period 30s
+
+    env:
+      SA_PASSWORD: ${{ format('Ci{0}#Aa1', github.run_id) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the SQL Server ODBC driver
+        run: |
+          set -euo pipefail
+          # --batch --yes because gpg otherwise wants a terminal to confirm on, and
+          # a runner has none ("cannot open '/dev/tty'").
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+            | sudo gpg --dearmor --batch --yes -o /usr/share/keyrings/microsoft-prod.gpg
+          # Track whatever Ubuntu the runner is on rather than pinning a version that
+          # goes stale when ubuntu-latest moves.
+          UBUNTU=$(lsb_release -rs)
+          LIST=/etc/apt/sources.list.d/mssql-release.list
+          curl -fsSL "https://packages.microsoft.com/config/ubuntu/${UBUNTU}/prod.list" \
+            | sudo tee "$LIST" > /dev/null
+          # Microsoft's list for 24.04 already carries signed-by; the one for 22.04
+          # does not. Adding a second [..] group makes apt reject the whole line
+          # ("Malformed entry ... (URI parse)"), so merge it into the existing group
+          # and only when it is actually missing.
+          if ! grep -q 'signed-by=' "$LIST"; then
+            sudo sed -i 's|^deb \[|deb [signed-by=/usr/share/keyrings/microsoft-prod.gpg |' "$LIST"
+          fi
+          cat "$LIST"
+          sudo apt-get update -qq
+          sudo ACCEPT_EULA=Y apt-get install -y -qq msodbcsql18 unixodbc-dev
+          odbcinst -q -d
+
+      - name: Install
+        run: python -m pip install --quiet pyodbc PyYAML fastapi "uvicorn[standard]" pytest
+
+      - name: Build both fixture databases
+        env:
+          IBASE_ADMIN_CONNECTION_STRING: >-
+            DRIVER={ODBC Driver 18 for SQL Server};SERVER=127.0.0.1,1433;UID=sa;PWD=${{ env.SA_PASSWORD }};Encrypt=yes;TrustServerCertificate=yes
+        run: |
+          python scripts/load_fixtures.py \
+            sql/001_demo_generic.sql sql/002_demo_generic_seed.sql sql/010_demo_ibase.sql
+
+      # Point discovery at a database it has never seen and check it works out the
+      # graph on its own, then check the mapping it wrote actually loads.
+      - name: Discovery proposes a usable mapping
+        env:
+          IBASE_CONNECTION_STRING: >-
+            DRIVER={ODBC Driver 18 for SQL Server};SERVER=127.0.0.1,1433;DATABASE=GraphXRConnectorDemo;UID=sa;PWD=${{ env.SA_PASSWORD }};Encrypt=yes;TrustServerCertificate=yes
+        run: |
+          python -m ibase_bridge.discovery --mapping-out /tmp/proposed.yml --facts-out /tmp/facts.json
+          python - <<'PY'
+          import yaml
+          from ibase_bridge import mapping
+          m = mapping.from_dict(yaml.safe_load(open("/tmp/proposed.yml")))
+          assert set(m.node_schemas) == {"Person", "Organization", "Account"}, m.node_schemas
+          # AccountTransfer's two keys both point at Account. Counting target TABLES
+          # sees one and calls it a record; counting key COLUMNS sees two ends.
+          assert "ACCOUNTTRANSFER" in m.rel_schemas, m.rel_schemas
+          print("discovery found", list(m.node_schemas), list(m.rel_schemas))
+          PY
+
+      - name: Start the bridge
+        env:
+          IBASE_CONNECTION_STRING: >-
+            DRIVER={ODBC Driver 18 for SQL Server};SERVER=127.0.0.1,1433;DATABASE=GraphXRConnectorDemo;UID=sa;PWD=${{ env.SA_PASSWORD }};Encrypt=yes;TrustServerCertificate=yes
+        run: |
+          mkdir -p logs
+          nohup python ibase_server.py --mapping config/mapping.demo.yml \
+            --name demo --port 7073 > logs/server.out 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:7073/health > /dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:7073/health || { cat logs/server.out; exit 1; }
+
+      # Fires ~33 queries and checks the answers. Crucially it also checks that every
+      # unsupported query was REFUSED - an empty graph reads as "nothing matched",
+      # which is a far worse failure than an error.
+      - name: Probe the running bridge
+        run: python scripts/probe_queries.py http://localhost:7073/ibase/demo
+
+      - name: Serve the iBase-shaped database too
+        env:
+          IBASE_CONNECTION_STRING: >-
+            DRIVER={ODBC Driver 18 for SQL Server};SERVER=127.0.0.1,1433;DATABASE=IBaseShapedDemo;UID=sa;PWD=${{ env.SA_PASSWORD }};Encrypt=yes;TrustServerCertificate=yes
+        run: |
+          python - <<'PY'
+          import os
+          from ibase_bridge import mapping
+          from ibase_bridge.connection import SqlServerConnection
+          from ibase_bridge.mssql_backend import MssqlBackend
+          from ibase_bridge.node_id import NodeIdCodec
+          from ibase_bridge.query_processor import QueryProcessor
+
+          m = mapping.load("config/mapping.ibase.yml")
+          conn = SqlServerConnection(os.environ["IBASE_CONNECTION_STRING"], pool_size=2)
+          codec = NodeIdCodec()
+          codec.register(m.label_order(), key_types=m.key_types(), samples={
+              l: [p + "0000001"] for l, p in
+              [("Person","PER"),("Organization","ORG"),("Vehicle","VEH"),
+               ("Event","EVT"),("Associate","ASS"),("Involved_In","INV")]})
+          qp = QueryProcessor(MssqlBackend(m, codec, connection=conn), "ibase")
+
+          # One link type, three kinds of endpoint, one Cypher pattern.
+          out = qp.execute("MATCH (a)-[r:Associate]->(z) RETURN a,r,z LIMIT 100")
+          by_id = {n["id"]: n["labels"][0] for n in out.data["nodes"]}
+          pairs = {(by_id.get(r["startNodeId"]), by_id.get(r["endNodeId"]))
+                   for r in out.data["relationships"]}
+          assert pairs == {("Person","Person"), ("Person","Organization"),
+                           ("Organization","Vehicle")}, pairs
+
+          # iBase permits several links of one type between the same two records.
+          # They must stay separate edges, which only works because an edge id comes
+          # from the link table's own key.
+          a = codec.encode("Person", ("PER0000001",))
+          b = codec.encode("Person", ("PER0000002",))
+          same = [r for r in out.data["relationships"]
+                  if r["startNodeId"] == a and r["endNodeId"] == b]
+          assert len(same) == 2, "parallel links collapsed: %r" % same
+
+          # Endpoints reached through the _LinkEnd system table.
+          out2 = qp.execute("MATCH (p:Person)-[r:Involved_In]->(e:Event) RETURN p,r,e")
+          assert len(out2.data["relationships"]) == 2, out2.data
+
+          # The ids we hand out must come back through Kineviz's internal_id form.
+          out3 = qp.execute("MATCH (p:Person) RETURN p LIMIT 2")
+          refs = ",".join("internal_id(%s, %s)" % tuple(n["id"].split(":"))
+                          for n in out3.data["nodes"])
+          out4 = qp.execute("MATCH (n)-[r]-(m) WHERE id(n) IN [%s] RETURN n,r,m LIMIT 50" % refs)
+          assert out4.data["relationships"], "expand round trip returned nothing"
+          print("iBase-shaped checks passed:", pairs)
+          PY
+
+      - name: The read-only guard refuses writes
+        env:
+          IBASE_CONNECTION_STRING: >-
+            DRIVER={ODBC Driver 18 for SQL Server};SERVER=127.0.0.1,1433;DATABASE=GraphXRConnectorDemo;UID=sa;PWD=${{ env.SA_PASSWORD }};Encrypt=yes;TrustServerCertificate=yes
+        run: |
+          python - <<'PY'
+          import os
+          from ibase_bridge.connection import SqlServerConnection, ReadOnlyViolation
+          c = SqlServerConnection(os.environ["IBASE_CONNECTION_STRING"], pool_size=1)
+          # Note this connects as sa, which CAN write. The point is that the bridge
+          # refuses before the statement ever reaches the driver, so a mistake in the
+          # query generator becomes a crash rather than a write.
+          for sql in ["DELETE FROM dbo.Person",
+                      "UPDATE dbo.Person SET full_name='x'",
+                      "DROP TABLE dbo.Person"]:
+              try:
+                  c.run(sql, [])
+              except ReadOnlyViolation:
+                  print("refused:", sql)
+              else:
+                  raise SystemExit("the bridge ran a write: " + sql)
+          PY
+
+      - name: Show the server log if anything failed
+        if: failure()
+        run: cat logs/server.out || true

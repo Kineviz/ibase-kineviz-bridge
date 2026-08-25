@@ -1,0 +1,95 @@
+# An iBase-SHAPED mapping. This is the shape a real i2 iBase database takes:
+# one table per entity type, one per link type, string record ids with a type
+# prefix, and endpoints reached through the _LinkEnd system table.
+#
+# IMPORTANT: every underscore-prefixed column name below is a PLACEHOLDER.
+# i2 does not publish _LinkEnd's columns and they differ between iBase versions,
+# so `discover` reads the real ones off the server and `validate` fails loudly if
+# what is written here does not exist. Nothing in the bridge assumes them.
+version: 2
+
+source:
+  dialect: sqlserver
+  driver: "ODBC Driver 18 for SQL Server"
+  connection_env: IBASE_CONNECTION_STRING
+  schema: dbo
+  query_timeout_seconds: 120
+  isolation_level: READ_UNCOMMITTED
+  pool_size: 8
+
+tuning:
+  max_branches: 64
+
+nodes:
+  - label: Person
+    table: Person
+    key: Person_ID
+    id_prefix: "PER"             # record ids look like PER0000123
+    properties: [Surname, Forename, DateOfBirth, Nationality]
+    types: {Person_ID: nvarchar, Surname: nvarchar, Forename: nvarchar, DateOfBirth: date, Nationality: nvarchar}
+
+  - label: Organization
+    table: Organisation
+    key: Organisation_ID
+    id_prefix: "ORG"
+    properties: [Name, Sector]
+    types: {Organisation_ID: nvarchar, Name: nvarchar, Sector: nvarchar}
+
+  - label: Vehicle
+    table: Vehicle
+    key: Vehicle_ID
+    id_prefix: "VEH"
+    properties: [Registration, Make, Model]
+    types: {Vehicle_ID: nvarchar, Registration: nvarchar, Make: nvarchar, Model: nvarchar}
+
+  - label: Event
+    table: Event
+    key: Event_ID
+    id_prefix: "EVT"
+    properties: [Description, OccurredOn]
+    types: {Event_ID: nvarchar, Description: nvarchar, OccurredOn: datetime2}
+
+edges:
+  # A POLYMORPHIC link: one type, several kinds of record at each end.
+  # The endpoints live on the link table itself, and which entity table a record
+  # id belongs to is told by its prefix. `row_estimate` is what `discover` counted;
+  # the biggest one becomes the pair reported to Kineviz's schema panel.
+  - type: Associate
+    table: Associate
+    key: Associate_ID
+    resolution: prefixed_fk
+    endpoints:
+      - src: {label: Person,       column: Link1, prefix: PER}
+        dst: {label: Person,       column: Link2, prefix: PER}
+        row_estimate: 412908
+      - src: {label: Person,       column: Link1, prefix: PER}
+        dst: {label: Organization, column: Link2, prefix: ORG}
+        row_estimate: 88140
+      - src: {label: Organization, column: Link1, prefix: ORG}
+        dst: {label: Vehicle,      column: Link2, prefix: VEH}
+        row_estimate: 3201
+    properties: [Confidence, FirstSeen, LastSeen]
+    types: {Associate_ID: nvarchar, Confidence: nvarchar, FirstSeen: date, LastSeen: date}
+
+  # The other iBase shape: endpoints resolved through the _LinkEnd system table.
+  - type: Involved_In
+    table: Involved_In
+    key: Involved_In_ID
+    resolution: link_end
+    link_end:
+      table: _LinkEnd
+      link_table_column: LinkTable
+      link_id_column: LinkId
+      end_column: End
+      record_id_column: RecordId
+      src_end_value: 1
+      dst_end_value: 2
+    endpoints:
+      - src: {label: Person,  prefix: PER}
+        dst: {label: Event,   prefix: EVT}
+        row_estimate: 51200
+      - src: {label: Vehicle, prefix: VEH}
+        dst: {label: Event,   prefix: EVT}
+        row_estimate: 12040
+    properties: [Role, RecordedOn]
+    types: {Involved_In_ID: nvarchar, Role: nvarchar, RecordedOn: date}

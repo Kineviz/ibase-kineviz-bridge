@@ -1,0 +1,20 @@
+[project]
+name = "ibase-bridge"
+version = "0.1.0"
+description = "Query an i2 iBase database on Microsoft SQL Server as a graph, from Kineviz"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.0.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# Only needed to talk to a real SQL Server. Everything else - the translator, the
+# tests, the SQL you can inspect - runs without it.
+mssql = ["pyodbc>=5.0"]
+dev = ["pytest>=7.0", "httpx>=0.24"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

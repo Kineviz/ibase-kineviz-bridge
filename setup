@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# Stand everything up: SQL Server, both demo databases, a read-only login, and the
+# Python environment. Safe to re-run - every step checks before it acts.
+#
+#   ./setup            everything
+#   ./setup status     what is running right now
+#   ./setup down       stop the container (keeps the data)
+#   ./setup destroy    stop it and delete the data
+set -uo pipefail
+
+CONTAINER=ibase-mssql
+PORT=${IBASE_MSSQL_PORT:-11433}
+PWFILE=".sa-password"
+VENV=.venv
+say()  { printf "\n\033[1m%s\033[0m\n" "$*"; }
+ok()   { printf "  \033[32m*\033[0m %s\n" "$*"; }
+warn() { printf "  \033[33m!\033[0m %s\n" "$*"; }
+die()  { printf "  \033[31mx\033[0m %s\n" "$*" >&2; exit 1; }
+
+sqlcmd_in() { docker exec -i "$CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
+  -S localhost -U sa -P "$SA_PASSWORD" -C "$@"; }
+
+# --- a password we generate, so there is never one written down in the repo ---
+load_password() {
+  if [ -f "$PWFILE" ]; then SA_PASSWORD=$(cat "$PWFILE"); return; fi
+  SA_PASSWORD="Ib$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)#7aZ"
+  printf '%s' "$SA_PASSWORD" > "$PWFILE"; chmod 600 "$PWFILE"
+  ok "generated a SQL Server password, kept in $PWFILE (git-ignored)"
+}
+
+cmd_status() {
+  say "SQL Server"
+  if docker ps --filter "name=$CONTAINER" --format '{{.Names}}' | grep -q .; then
+    ok "$(docker ps --filter name=$CONTAINER --format '{{.Status}}, {{.Ports}}')"
+  else
+    warn "not running"
+  fi
+  say "Bridge"
+  local found=0
+  for p in 7073 7074; do
+    if curl -sf --max-time 2 "http://localhost:$p/health" >/dev/null 2>&1; then
+      ok "port $p: $(curl -s --max-time 2 http://localhost:$p/health)"; found=1
+    fi
+  done
+  [ "$found" = 0 ] && warn "no bridge answering on 7073 or 7074"
+  return 0
+}
+
+cmd_down()    { docker stop "$CONTAINER" >/dev/null 2>&1 && ok "stopped" || warn "was not running"; }
+cmd_destroy() { docker rm -f "$CONTAINER" >/dev/null 2>&1 && ok "container removed" || warn "nothing to remove"
+                rm -f "$PWFILE" && ok "password file removed"; }
+
+cmd_up() {
+  say "1/5  Checking what you have"
+  command -v docker >/dev/null || die "Docker is not installed. Get Docker Desktop from docker.com."
+  docker info >/dev/null 2>&1 || die "Docker is installed but not running. Start Docker Desktop."
+  ok "docker $(docker --version | awk '{print $3}' | tr -d ,)"
+  local arch; arch=$(uname -m)
+  if [ "$arch" = "arm64" ] || [ "$arch" = "aarch64" ]; then
+    warn "you are on $arch; SQL Server has no native build, so it runs emulated"
+    warn "turn on Docker Desktop > Settings > General > 'Use Rosetta for x86_64/amd64 emulation' if you have not"
+  fi
+  command -v python3 >/dev/null || die "python3 is not installed"
+  ok "python $(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])')"
+  load_password
+
+  say "2/5  SQL Server"
+  if docker ps --filter "name=$CONTAINER" --format '{{.Names}}' | grep -q .; then
+    ok "already running"
+  else
+    docker rm -f "$CONTAINER" >/dev/null 2>&1
+    docker run -d --name "$CONTAINER" --platform linux/amd64 \
+      -e ACCEPT_EULA=Y -e "MSSQL_SA_PASSWORD=$SA_PASSWORD" -e MSSQL_PID=Developer \
+      -p "$PORT:1433" mcr.microsoft.com/mssql/server:2022-latest >/dev/null \
+      || die "could not start SQL Server"
+    ok "started on port $PORT"
+  fi
+  printf "  waiting for it to accept connections"
+  for _ in $(seq 1 60); do
+    if sqlcmd_in -Q "SELECT 1" >/dev/null 2>&1; then printf " ready\n"; break; fi
+    printf "."; sleep 3
+  done
+  sqlcmd_in -Q "SELECT 1" >/dev/null 2>&1 || die "SQL Server never became ready. Try: docker logs $CONTAINER"
+
+  say "3/5  Python environment"
+  if [ ! -d "$VENV" ]; then
+    (command -v uv >/dev/null && uv venv --python 3.11 "$VENV" >/dev/null 2>&1) \
+      || python3 -m venv "$VENV" || die "could not create a virtual environment"
+    ok "created $VENV"
+  else ok "$VENV already exists"; fi
+  # shellcheck disable=SC1091
+  . "$VENV/bin/activate"
+  if python -c "import pyodbc" 2>/dev/null; then
+    ok "pyodbc already installed"
+  else
+    warn "installing pyodbc, PyYAML, fastapi, uvicorn"
+    if ! (command -v uv >/dev/null && uv pip install -q pyodbc PyYAML fastapi "uvicorn[standard]" 2>/dev/null) \
+       && ! pip install -q pyodbc PyYAML fastapi "uvicorn[standard]" 2>/dev/null; then
+      warn "pyodbc did not build. It needs the Microsoft ODBC driver:"
+      warn "  macOS: brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release"
+      warn "         brew trust microsoft/mssql-release && brew install msodbcsql18"
+      warn "  Linux: see https://learn.microsoft.com/sql/connect/odbc/linux-mac/"
+      die "install the driver, then run ./setup again"
+    fi
+    ok "installed"
+  fi
+  python -c "import pyodbc,sys; sys.exit(0 if pyodbc.drivers() else 1)" 2>/dev/null \
+    || die "no ODBC driver found. Install msodbcsql18 (see above), then run ./setup again."
+
+  say "4/5  Demo databases"
+  export IBASE_ADMIN_CONNECTION_STRING="DRIVER={ODBC Driver 18 for SQL Server};SERVER=127.0.0.1,$PORT;UID=sa;PWD=$SA_PASSWORD;Encrypt=yes;TrustServerCertificate=yes"
+  python scripts/load_fixtures.py \
+    sql/001_demo_generic.sql sql/002_demo_generic_seed.sql sql/010_demo_ibase.sql \
+    || die "could not build the demo databases"
+  ok "GraphXRConnectorDemo  - the specification's schema"
+  ok "IBaseShapedDemo       - shaped the way iBase is shaped"
+
+  say "5/5  A read-only login"
+  local ro_pw; ro_pw="Ro$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 18)#3xQ"
+  for db in GraphXRConnectorDemo IBaseShapedDemo; do
+    sqlcmd_in -Q "
+IF SUSER_ID('ibase_ro') IS NULL CREATE LOGIN ibase_ro WITH PASSWORD='$ro_pw', CHECK_POLICY=ON;
+USE [$db];
+IF USER_ID('ibase_ro') IS NULL CREATE USER ibase_ro FOR LOGIN ibase_ro;
+ALTER ROLE db_datareader ADD MEMBER ibase_ro;
+DENY INSERT, UPDATE, DELETE, ALTER, EXECUTE TO ibase_ro;" >/dev/null 2>&1
+  done
+  printf '%s' "$ro_pw" > .ro-password; chmod 600 .ro-password
+  ok "created ibase_ro with SELECT only (password in .ro-password, git-ignored)"
+
+  cat <<EOF
+
+  Everything is up. Start the bridge:
+
+    . $VENV/bin/activate
+    export IBASE_CONNECTION_STRING='DRIVER={ODBC Driver 18 for SQL Server};SERVER=127.0.0.1,$PORT;DATABASE=GraphXRConnectorDemo;UID=ibase_ro;PWD=$ro_pw;Encrypt=yes;TrustServerCertificate=yes'
+    python ibase_server.py --mapping config/mapping.demo.yml --name demo --port 7073 --studio
+
+  Then open  http://localhost:7073/studio  for status and the Kineviz connection steps.
+
+EOF
+}
+
+case "${1:-up}" in
+  up|"")   cmd_up ;;
+  status)  cmd_status ;;
+  down)    load_password; cmd_down ;;
+  destroy) cmd_destroy ;;
+  *) echo "usage: ./setup [up|status|down|destroy]"; exit 2 ;;
+esac
