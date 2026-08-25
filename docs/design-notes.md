@@ -256,3 +256,67 @@ thing that was stopping arbitrary web pages from reaching this bridge, and the b
 password of its own. So the same change narrowed CORS from `.*` to Kineviz origins plus
 localhost, with `--allow-origin` for a self-hosted Kineviz. Widening it back to `*` would let
 any page a browser opens read whatever the SQL login can read.
+
+
+---
+
+## Which SQL Server versions, and the two things that decide it
+
+Two features set the floor.
+
+**`OFFSET … FETCH NEXT`** arrived in SQL Server 2012, and Kineviz pages every result set with
+`SKIP`/`LIMIT`. That makes **2012 the oldest supported engine**; 2008 R2 would need paging
+rewritten around a windowed subquery.
+
+**`OPENJSON`** arrived in 2016, and is how a long id list crosses as a single parameter. Below
+that the first version of this code fell back to "chunked `IN` lists" — except the chunking was
+a helper nobody called, so a 2014 server would have emitted 3,000 parameters and failed at
+2,101. Now pre-2016 servers shred an XML parameter instead:
+
+```sql
+col IN (SELECT T.c.value('.', 'bigint')
+        FROM (SELECT CAST(? AS xml)) AS X(x) CROSS APPLY x.nodes('/i') AS T(c))
+```
+
+One parameter, an explicit cast so the join still seeks, and it has worked since 2005. Both
+paths were run against a live server and returned the same answer.
+
+**`OPENJSON` also needs the database's compatibility level to be 130+**, not just the engine
+version. A database restored from an older server keeps its old level, so a 2022 engine can
+still be on the XML path. The bridge reads both `SERVERPROPERTY('ProductMajorVersion')` and
+`sys.databases.compatibility_level` and decides from the pair.
+
+---
+
+## Three bugs the connection panel turned up
+
+Adding a form to connect to your own database exposed defects that had nothing to do with the
+form.
+
+**The pool leaked a slot on every failed connection.** `_acquire` incremented `_made` *before*
+calling `_connect()`, and did not roll it back when that raised. With `pool_size` slots and
+enough failures, every slot burned, and `self._pool.get()` then blocked **forever** — a wrong
+password did not produce an error, it produced a bridge that hung. It now returns the slot, and
+waits with a timeout so no caller can block indefinitely.
+
+**A wrong password reported success.** `SqlServerConnection.__init__` only ever connected
+lazily, and `_probe_version` swallowed the failure with a warning — so the constructor returned
+a healthy-looking object whose every query would fail later, somewhere less obvious. It now
+opens one connection eagerly and lets the failure out. Wrong password: refused in 0.1 s.
+
+**Checking whether a login can write, by writing.** The first version attempted an `UPDATE …
+WHERE 1 = 0` and guessed from the error text. Unreliable — it reported that the read-only login
+*could* write — and it is a write attempt against someone's investigative database. It now asks
+`fn_my_permissions(NULL, 'DATABASE')` instead, which is exact and has no side effects.
+
+---
+
+## The page's JavaScript is now syntax-checked
+
+The editor is one large string inside a Python module, and `PAGE` is an ordinary triple-quoted
+string — so `\n` written into a JavaScript regex literal became a **real newline** on the way
+out, which is a syntax error that killed the entire script. The page loaded, said "loading…",
+and did nothing else. No test caught it; opening the page did.
+
+`test_the_editors_javascript_actually_parses` now extracts the script block and runs
+`node --check` on it, skipping where node is unavailable.

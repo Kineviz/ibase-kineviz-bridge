@@ -51,7 +51,8 @@ class MssqlBackend(Backend):
         self.connection = connection
         self.schema = mapping.schema
         self.dialect = tsql.Dialect(
-            server_major=getattr(connection, "server_major", 16))
+            server_major=getattr(connection, "server_major", 16),
+            compat_level=getattr(connection, "compat_level", 130))
         self.max_branches = int(mapping.tuning.get("max_branches") or 64)
         self.last_sql = ""
 

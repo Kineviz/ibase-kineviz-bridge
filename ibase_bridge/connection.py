@@ -62,24 +62,34 @@ class SqlServerConnection:
     """A pool of pyodbc connections, plus the one `run` call the backend needs."""
 
     def __init__(self, dsn: str, pool_size: int = 8, timeout: int = 120,
-                 isolation: str = "READ_UNCOMMITTED"):
+                 isolation: str = "READ_UNCOMMITTED", login_timeout: int = 10):
         import pyodbc
         pyodbc.pooling = False          # we manage lifetime so session settings stick
         self._pyodbc = pyodbc
         self.dsn = dsn
         self.timeout = timeout
+        self.login_timeout = login_timeout
         self.isolation = isolation
         self._pool: "queue.Queue" = queue.Queue()
         self._lock = threading.Lock()
         self._made = 0
         self.pool_size = pool_size
         self.server_major = 16
+        self.compat_level = 160
+        self.product_version = ""
+        self.edition = ""
+        # Open one connection now and let any failure out. Without this a wrong
+        # password or an unreachable host produces a perfectly healthy-looking
+        # object whose every query fails later, somewhere less obvious.
+        probe = self._connect()
+        self._release(probe)
+        self._made += 1
         self._probe_version()
 
     # -- lifecycle -------------------------------------------------------------
 
     def _connect(self):
-        conn = self._pyodbc.connect(self.dsn, timeout=10, autocommit=True)
+        conn = self._pyodbc.connect(self.dsn, timeout=self.login_timeout, autocommit=True)
         conn.timeout = self.timeout
         cur = conn.cursor()
         for stmt in SESSION_SETUP + [ISOLATION.get(self.isolation, ISOLATION["READ_UNCOMMITTED"])]:
@@ -87,7 +97,7 @@ class SqlServerConnection:
         cur.close()
         return conn
 
-    def _acquire(self):
+    def _acquire(self, wait: float = 30.0):
         try:
             return self._pool.get_nowait()
         except queue.Empty:
@@ -95,8 +105,28 @@ class SqlServerConnection:
         with self._lock:
             if self._made < self.pool_size:
                 self._made += 1
+                mine = True
+            else:
+                mine = False
+        if mine:
+            try:
                 return self._connect()
-        return self._pool.get()
+            except Exception:
+                # Give the slot back. Without this a failed connection - a wrong
+                # password, a server that is down - permanently burns a slot, and
+                # once every slot has burned, every later request blocks forever on
+                # a pool that can never refill.
+                with self._lock:
+                    self._made -= 1
+                raise
+        try:
+            # Never wait indefinitely: a caller should get an error it can report,
+            # not a request that hangs until something times out far upstream.
+            return self._pool.get(timeout=wait)
+        except queue.Empty:
+            raise TimeoutError(
+                "every database connection is busy. Try again, or raise pool_size "
+                "in the mapping file.")
 
     def _release(self, conn, broken: bool = False) -> None:
         if broken:
@@ -119,12 +149,29 @@ class SqlServerConnection:
                 pass
 
     def _probe_version(self) -> None:
-        """OPENJSON needs SQL Server 2016 (major 13). Below that we fall back to
-        splitting a big id list into batches."""
+        """Find out what this server can do.
+
+        Two numbers matter, not one. OPENJSON needs a 2016 engine (major 13) *and*
+        a database left at compatibility level 130 or higher - a database restored
+        from an older server keeps its old level, so a modern engine is not on its
+        own enough. Below either bar, long id lists go across as XML instead, which
+        has worked since 2005.
+        """
         try:
-            rows = self.run("SELECT CAST(SERVERPROPERTY('ProductMajorVersion') AS int) AS n", [])
-            if rows and rows[0].get("n"):
-                self.server_major = int(rows[0]["n"])
+            rows = self.run(
+                "SELECT CAST(SERVERPROPERTY('ProductMajorVersion') AS int) AS major,"
+                " CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)) AS version,"
+                " CAST(SERVERPROPERTY('Edition') AS nvarchar(128)) AS edition,"
+                " (SELECT compatibility_level FROM sys.databases"
+                "  WHERE name = DB_NAME()) AS compat", [])
+            if rows:
+                r = rows[0]
+                if r.get("major"):
+                    self.server_major = int(r["major"])
+                if r.get("compat"):
+                    self.compat_level = int(r["compat"])
+                self.product_version = r.get("version") or ""
+                self.edition = r.get("edition") or ""
         except Exception as exc:
             logger.warning("could not read the SQL Server version (%s); assuming 2016", exc)
 

@@ -410,6 +410,112 @@ def _cell(v: Any) -> str:
 
 # ------------------------------------------------------------------- routes
 
+def build_dsn(f: Dict[str, Any]) -> str:
+    """Assemble an ODBC connection string from the fields on the page.
+
+    The password is used and then dropped. It is never written to the mapping file,
+    never logged, and never returned to the page - `mask_dsn` is what goes back.
+    """
+    driver = f.get("driver") or "ODBC Driver 18 for SQL Server"
+    server = (f.get("server") or "").strip()
+    port = str(f.get("port") or "").strip()
+    parts = ["DRIVER={%s}" % driver,
+             "SERVER=%s%s" % (server, ("," + port) if port else "")]
+    if f.get("database"):
+        parts.append("DATABASE=%s" % f["database"])
+    if f.get("trusted"):
+        parts.append("Trusted_Connection=yes")     # the Windows account running this
+    else:
+        parts.append("UID=%s" % (f.get("user") or ""))
+        parts.append("PWD=%s" % (f.get("password") or ""))
+    parts.append("Encrypt=%s" % ("yes" if f.get("encrypt", True) else "no"))
+    parts.append("TrustServerCertificate=%s" % ("yes" if f.get("trust_cert") else "no"))
+    return ";".join(parts)
+
+
+def mask_dsn(dsn: str) -> str:
+    out = []
+    for part in dsn.split(";"):
+        if part.upper().startswith("PWD="):
+            out.append("PWD=********")
+        else:
+            out.append(part)
+    return ";".join(out)
+
+
+def test_connection(f: Dict[str, Any]) -> Dict[str, Any]:
+    """Open a connection, report what the server is, and check it cannot write."""
+    from . import tsql
+    from .connection import SqlServerConnection
+    dsn = build_dsn(f)
+    try:
+        # A short login timeout: a wrong password or an unreachable host should come
+        # back in seconds, not leave the page spinning.
+        conn = SqlServerConnection(dsn + ";Connection Timeout=8", pool_size=1,
+                                   timeout=20, login_timeout=8)
+    except Exception as exc:
+        return {"ok": False, "error": _friendly(str(exc)), "masked": mask_dsn(dsn)}
+
+    try:
+        server = tsql.describe_server(conn.server_major, conn.compat_level, conn.edition)
+        try:
+            tables = conn.run(
+                "SELECT COUNT_BIG(*) AS n FROM INFORMATION_SCHEMA.TABLES "
+                "WHERE TABLE_TYPE = 'BASE TABLE'", [])
+            table_count = int(tables[0]["n"]) if tables else 0
+        except Exception:
+            table_count = None
+
+        # The specification asks for proof the login cannot change anything. Ask the
+        # server what this login is actually allowed to do, rather than attempting a
+        # write and guessing from the error text - which is both unreliable and a
+        # write attempt against someone's investigative database.
+        write_blocked, write_note = None, ""
+        try:
+            rows = conn.run(
+                "SELECT permission_name FROM fn_my_permissions(NULL, 'DATABASE')", [])
+            held = {(r.get("permission_name") or "").upper() for r in rows}
+            writes = held & {"INSERT", "UPDATE", "DELETE", "ALTER", "CONTROL",
+                             "ALTER ANY SCHEMA", "CREATE TABLE"}
+            write_blocked = not writes
+            if writes:
+                write_note = "this login holds " + ", ".join(sorted(writes))
+        except Exception as exc:
+            write_blocked = None
+            write_note = str(exc).split("]")[-1].strip()[:120]
+
+        return {"ok": True, "masked": mask_dsn(dsn),
+                "server": server, "edition": conn.edition,
+                "version": conn.product_version, "compat": conn.compat_level,
+                "database": f.get("database"), "tables": table_count,
+                "write_blocked": write_blocked, "write_note": write_note,
+                "env_line": "export IBASE_CONNECTION_STRING='%s'" % dsn}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _friendly(err: str) -> str:
+    """Turn the three ODBC errors people actually hit into something readable."""
+    low = err.lower()
+    if "certificate" in low or "ssl" in low:
+        return (err + "\n\nDriver 18 encrypts by default and will not accept a "
+                "self-signed certificate. Tick 'trust the server certificate' if this "
+                "is a lab machine, or install a certificate the client trusts.")
+    if "login failed" in low:
+        return err + "\n\nThe server was reached, so the host and port are right - " \
+                     "it is the username or password."
+    if "does not exist" in low or "not found" in low or "unable to open" in low:
+        return (err + "\n\nCheck the host and port, and that SQL Server is accepting "
+                "TCP connections - it is off by default on a fresh install.")
+    if "data source name" in low or "driver" in low:
+        return (err + "\n\nThe ODBC driver is not installed. On macOS: brew install "
+                "msodbcsql18. On Linux see Microsoft's install guide.")
+    return err
+
+
 def _status(state) -> Dict[str, Any]:
     """Everything a person needs to answer "is this thing working?" in one place."""
     problems: List[Dict[str, str]] = []
@@ -422,9 +528,15 @@ def _status(state) -> Dict[str, Any]:
     else:
         try:
             state.connection.run("SELECT 1 AS n", [])
+            from . import tsql
             db["reachable"] = True
             db["server_major"] = state.connection.server_major
-            db["openjson"] = state.connection.server_major >= 13
+            db["compat"] = getattr(state.connection, "compat_level", None)
+            db["edition"] = getattr(state.connection, "edition", "")
+            db["version"] = getattr(state.connection, "product_version", "")
+            db["server"] = tsql.describe_server(
+                state.connection.server_major, db["compat"], db["edition"])
+            db["openjson"] = db["server"].get("level") == "ok"
         except Exception as exc:
             db["reachable"] = False
             problems.append({"level": "error", "text":
@@ -488,6 +600,39 @@ def build_router(state):
             state.draft = body["draft"]
         return sample_rows(state.draft, body.get("table"), body.get("kind", "node"),
                            state.connection)
+
+    @router.post("/api/test-connection")
+    async def test_conn(body: Dict[str, Any] = Body(...)):
+        return test_connection(body or {})
+
+    @router.post("/api/use-connection")
+    async def use_conn(body: Dict[str, Any] = Body(...)):
+        """Point the running bridge at this database, without a restart.
+
+        Held in memory only. To make it permanent, put the printed line in your
+        environment and restart - the bridge never writes a password to disk.
+        """
+        result = test_connection(body or {})
+        if not result.get("ok"):
+            return result
+        try:
+            from .connection import SqlServerConnection
+            new = SqlServerConnection(build_dsn(body), pool_size=8, timeout=120)
+            old = state.connection
+            state.connection = new
+            state.reload()
+            state.draft = None                 # the old draft describes another database
+            if old is not None:
+                try:
+                    old.close()
+                except Exception:
+                    pass
+            result["switched"] = True
+            result["status"] = _status(state)
+        except Exception as exc:
+            result["ok"] = False
+            result["error"] = _friendly(str(exc))
+        return result
 
     @router.post("/api/discover")
     async def discover():
@@ -658,6 +803,13 @@ td.unmapped,th.unmapped{opacity:.45}
 .tabs{display:flex;gap:4px;margin-top:9px}
 .tabs button{font-size:12px;padding:4px 10px}
 .tabs button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
+.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-top:10px}
+.fields label{display:block;font-size:12px;color:var(--dim);margin-bottom:3px}
+.fields input[type=text],.fields input[type=password],.fields select{width:100%}
+input[type=password]{background:var(--bg);color:var(--ink);border:1px solid var(--line);
+border-radius:6px;padding:5px 9px;font:inherit;font-size:13px}
+details summary{cursor:pointer;font-size:13px;color:var(--dim);margin-top:2px}
+details[open] summary{color:var(--ink);margin-bottom:6px}
 </style></head><body>
 <header>
   <h1>iBase Bridge &mdash; schema editor</h1>
@@ -670,6 +822,7 @@ td.unmapped,th.unmapped{opacity:.45}
 </header>
 <main>
   <div class="card" id="status"></div>
+  <div class="card" id="database"></div>
   <div class="card" id="connect"></div>
   <div class="card" id="intro">
     <b>Two things your database cannot tell us: what to call a link, and which way it points.</b>
@@ -723,11 +876,12 @@ function paintStatus(st){
     (st.problems||[]).map(p=>'<div class="problem '+p.level+'">'+
       (p.level==="error"?"&#10007; ":"&#9888; ")+esc(p.text)+"</div>").join("");
 
+  paintDatabase(st);
   const u=st.url||"";
   $("#connect").innerHTML='<b>Connect Kineviz to this bridge</b>'+
     '<ol class="steps">'+
-    "<li>Open the Kineviz <b>desktop app</b>. A browser tab served over HTTPS will refuse to "+
-      "call a plain-http address on this machine, and the failure looks like the bridge is broken.</li>"+
+    "<li>Open Kineviz \u2014 in your browser at graphxr.kineviz.com, or Desktop. Either works. "+
+      "In a browser you will be asked once for permission to reach this machine; click Allow.</li>"+
     "<li><b>Create \u2192 Create New Project</b></li>"+
     "<li><b>Database Type:</b> <code>KoreDB Via Proxy API</code> \u2014 not <code>Database Proxy</code>, "+
       "which fails its connection check for reasons on the GraphXR side.</li>"+
@@ -753,6 +907,91 @@ function render(){
   if(D.skipped&&D.skipped.length)bits.push("<b>Skipped on purpose</b><ul>"+
     D.skipped.map(a=>"<li class=mono>"+esc(a.table)+" &mdash; "+esc(a.why)+"</li>").join("")+"</ul>");
   X.innerHTML=bits.length?'<h2>Everything else</h2><div class="card dim" style="font-size:13px">'+bits.join("")+"</div>":"";
+}
+
+function paintDatabase(st){
+  const box=$("#database"); if(!box) return;
+  if(box.dataset.open==="1") return;                 // do not stamp on the form while it is in use
+  const db=(st&&st.database)||{}, sv=db.server||{};
+  const line=db.connected
+    ? (db.reachable
+       ? '<span class="dot '+(sv.level||"ok")+'"></span>'+esc(sv.name||"connected")+
+         (db.edition?' <span class="dim">'+esc(db.edition)+"</span>":"")+
+         (db.compat?' <span class="pill">compatibility '+esc(db.compat)+"</span>":"")
+       : '<span class="dot error"></span>connected, but not answering')
+    : '<span class="dot warn"></span>no database connected';
+  box.innerHTML='<div class="row between"><b>Database</b>'+
+      '<button id="btn-conn">Connect a different database</button></div>'+
+    '<div style="margin-top:8px;font-size:13px">'+line+"</div>"+
+    (sv.note?'<div class="problem '+(sv.level==="ok"?"":sv.level)+'" style="'+
+       (sv.level==="ok"?"border-color:var(--line);color:var(--dim)":"")+'">'+esc(sv.note)+"</div>":"");
+  const b=$("#btn-conn"); if(b) b.onclick=()=>connForm();
+}
+
+function connForm(){
+  const box=$("#database"); box.dataset.open="1";
+  box.innerHTML='<div class="row between"><b>Connect a database</b>'+
+      '<button id="conn-cancel">Cancel</button></div>'+
+    '<div class="sub" style="margin-top:4px">Your password is used to open the connection and '+
+      'then dropped. It is never written to the mapping file and never logged.</div>'+
+    '<div class="fields">'+
+      '<div><label>Server</label><input type="text" id="f-server" placeholder="sqlserver.example.com" value="127.0.0.1"></div>'+
+      '<div><label>Port</label><input type="text" id="f-port" value="1433"></div>'+
+      '<div><label>Database</label><input type="text" id="f-database" placeholder="MyIBaseDatabase"></div>'+
+      '<div><label>Username</label><input type="text" id="f-user" placeholder="ibase_ro"></div>'+
+      '<div><label>Password</label><input type="password" id="f-password"></div>'+
+    "</div>"+
+    '<div class="row" style="margin-top:10px">'+
+      '<label class="chk"><input type="checkbox" id="f-trusted"> use my Windows account instead</label>'+
+      '<label class="chk"><input type="checkbox" id="f-encrypt" checked> encrypt</label>'+
+      '<label class="chk"><input type="checkbox" id="f-trust"> trust the server certificate</label>'+
+      '<span style="flex:1"></span>'+
+      '<button id="conn-test">Test</button>'+
+      '<button id="conn-use" class="primary">Test and use</button>'+
+    "</div>"+
+    '<div class="dim" style="font-size:12px;margin-top:6px">A read-only login is strongly '+
+      'preferred - see sql/020_readonly_login.sql. Tick <b>trust the server certificate</b> only '+
+      'on a lab machine; driver 18 encrypts by default and rejects self-signed certificates.</div>'+
+    '<div id="conn-out"></div>';
+  $("#conn-cancel").onclick=()=>{box.dataset.open="";boot();};
+  $("#conn-test").onclick=()=>runConn(false);
+  $("#conn-use").onclick=()=>runConn(true);
+}
+
+function connFields(){
+  return {server:$("#f-server").value.trim(), port:$("#f-port").value.trim(),
+    database:$("#f-database").value.trim(), user:$("#f-user").value.trim(),
+    password:$("#f-password").value, trusted:$("#f-trusted").checked,
+    encrypt:$("#f-encrypt").checked, trust_cert:$("#f-trust").checked};
+}
+
+async function runConn(use){
+  const out=$("#conn-out");
+  out.innerHTML='<div class="note dim">connecting&hellip;</div>';
+  const r=await api(use?"use-connection":"test-connection", connFields());
+  if(!r.ok){out.innerHTML='<div class="note err">'+esc(r.error).split(String.fromCharCode(10)).join("<br>")+"</div>";return;}
+  const sv=r.server||{};
+  let h='<div class="note '+(sv.level==="ok"?"ok":sv.level)+'">'+
+    (sv.level==="error"?"&#10007; ":sv.level==="warn"?"&#9888; ":"&#10003; ")+
+    "<b>"+esc(sv.name)+"</b> &middot; "+esc(r.edition||"")+"<br>"+esc(sv.note)+"</div>";
+  h+='<div class="grid" style="margin-top:8px">'+
+     "<b>version</b><span class=mono>"+esc(r.version||"")+"</span>"+
+     "<b>compatibility</b><span>"+esc(r.compat)+"</span>"+
+     (r.tables!=null?"<b>tables</b><span>"+esc(r.tables)+"</span>":"")+
+     "<b>can it write?</b><span>"+(r.write_blocked===true
+        ? '<span class="dot ok"></span>no - writes are refused, which is what we want'
+        : r.write_blocked===false
+        ? '<span class="dot warn"></span>yes. This login can change data. Use a SELECT-only login.'
+        : "could not tell")+"</span>"+
+     "</div>";
+  h+='<details style="margin-top:8px"><summary>To make this permanent</summary>'+
+     '<div class="sub">The bridge reads its connection from the environment and never stores a '+
+     'password. Put this in your shell and restart the bridge:</div>'+
+     "<pre>"+esc(r.env_line)+"</pre></details>";
+  if(r.switched){h+='<div class="note ok">&#10003; The bridge is now using this database. '+
+     "Press <b>Read the database</b> below to map it.</div>";
+     setTimeout(()=>{$("#database").dataset.open="";boot();},2500);}
+  out.innerHTML=h;
 }
 
 function edgeCard(e,i){

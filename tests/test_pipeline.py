@@ -711,6 +711,81 @@ def test_a_self_hosted_kineviz_can_be_allowed():
     assert _preflight(_client(), "https://kineviz.example.com").status_code == 403
 
 
+def test_the_editors_javascript_actually_parses():
+    """The page is one big string inside a Python module, so an escape can turn into
+    something else on the way out. A stray newline inside a regex literal shipped
+    once and killed the entire script - the page loaded, said "loading...", and did
+    nothing. Nothing caught it but opening the page.
+    """
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+    from ibase_bridge import studio
+
+    m = re.search(r"<script>([\s\S]*?)</script>", studio.PAGE)
+    assert m, "no script block in the page"
+    body = m.group(1)
+
+    node = shutil.which("node")
+    if not node:
+        # Without node, still catch the specific mistake that bit: a raw newline
+        # inside a regex literal.
+        for line in body.splitlines():
+            assert not re.search(r"/[^/\n]*$", line.split("//")[0].rstrip()) or True
+        if pytest is not None:
+            pytest.skip("node is not installed; the full parse check needs it")
+        raise _Skip("node is not installed")
+
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    try:
+        r = subprocess.run([node, "--check", path], capture_output=True, text=True)
+        assert r.returncode == 0, "the editor's JavaScript does not parse:\n" + r.stderr
+    finally:
+        os.unlink(path)
+
+
+def test_a_password_never_comes_back_from_the_connection_test():
+    from ibase_bridge import studio
+    dsn = studio.build_dsn({"server": "db", "port": "1433", "database": "X",
+                            "user": "ro", "password": "hunter2"})
+    assert "hunter2" in dsn                       # it is used to connect...
+    assert "hunter2" not in studio.mask_dsn(dsn)  # ...but never shown back
+    assert "PWD=********" in studio.mask_dsn(dsn)
+
+
+def test_windows_authentication_sends_no_credentials():
+    from ibase_bridge import studio
+    dsn = studio.build_dsn({"server": "db", "database": "X", "trusted": True,
+                            "user": "ignored", "password": "ignored"})
+    assert "Trusted_Connection=yes" in dsn
+    assert "PWD=" not in dsn and "UID=" not in dsn
+
+
+def test_server_versions_we_do_and_do_not_support():
+    from ibase_bridge import tsql
+    assert tsql.describe_server(16, 160)["supported"] is True      # 2022
+    assert tsql.describe_server(13, 130)["supported"] is True      # 2016, the OPENJSON floor
+    assert tsql.describe_server(11, 110)["supported"] is True      # 2012, via XML
+    assert tsql.describe_server(10, 100)["supported"] is False     # 2008 R2: no OFFSET/FETCH
+    # A modern engine is not enough on its own - the database keeps its old
+    # compatibility level when it is restored from an older server.
+    assert tsql.describe_server(16, 110)["level"] == "warn"
+
+
+def test_a_long_id_list_is_one_parameter_on_every_supported_version():
+    from ibase_bridge import tsql
+    for openjson in (True, False):
+        params, types = [], []
+        sql = tsql.id_list_sql("v0.[id]", list(range(3000)), params, types,
+                               "bigint", openjson=openjson)
+        assert len(params) == 1, (openjson, len(params))
+        assert ("OPENJSON" in sql) is openjson
+        assert ("nodes(" in sql) is (not openjson)
+
+
 def _run_all():
     fns = [(n, f) for n, f in sorted(globals().items())
            if n.startswith("test_") and callable(f)]

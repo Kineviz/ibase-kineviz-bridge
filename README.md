@@ -33,6 +33,23 @@ To Kineviz it looks like an ordinary graph database, so nothing inside Kineviz h
 
 ---
 
+## Which SQL Server versions work
+
+| Version | | Notes |
+| --- | --- | --- |
+| **2016, 2017, 2019, 2022, 2025** | ✅ full | Long selections travel as one JSON parameter (`OPENJSON`). |
+| **Azure SQL Database / Managed Instance** | ✅ full | Same engine generation. |
+| **SQL Server 2012, 2014** | ✅ works | No `OPENJSON`, so long selections travel as XML instead — one parameter either way, just less directly. |
+| **2008 R2 and earlier** | ❌ no | Paging needs `OFFSET … FETCH NEXT`, added in 2012. Kineviz pages every result, so there is no way around it. |
+
+Also **SQL Server on Linux** (2017+) and **in containers** — the demo runs in one.
+
+**One thing to watch on an older database.** `OPENJSON` needs the engine to be 2016+ *and* the
+database to be at **compatibility level 130 or higher**. A database restored from an older
+server keeps its old level, so a 2022 engine hosting a level-110 database still falls back to
+XML. The bridge checks both and tells you which path it is on — `/studio` says so plainly, and
+picks the right one either way.
+
 ## What you need
 
 1. **Docker** — Engine 24.0+ or Docker Desktop. SQL Server runs as a container.
@@ -120,6 +137,34 @@ reason to prefer it.
 | Linux (other) | `Kineviz-Desktop-<ver>-linux-x86_64.AppImage` |
 
 Not sure which? `uname -sm` tells you.
+
+## Connecting to your own database
+
+The schema editor has a **Database** section: press **Connect a different database**, fill in
+server, port, database and login, then **Test** or **Test and use**.
+
+Test reports what it found, in words:
+
+```
+✓ 2022 · Developer Edition (64-bit)
+  Fully supported.
+
+  version          16.0.4265.3
+  compatibility    160
+  tables           6
+  can it write?    ● no — writes are refused, which is what we want
+```
+
+That last line is worth reading. It asks the server what the login is actually permitted to do
+rather than attempting a write, and warns you if the account can change data. Use a
+`SELECT`-only login — `sql/020_readonly_login.sql` creates one.
+
+**Test and use** points the running bridge at that database immediately, no restart. It is held
+in memory only: **the bridge never writes a password to disk**. To make it permanent, the panel
+shows the `export IBASE_CONNECTION_STRING=…` line to put in your environment.
+
+Common failures are explained rather than passed through raw — a self-signed certificate
+rejected by driver 18, a wrong password, an unreachable host, a missing ODBC driver.
 
 ## Connect Kineviz to the bridge
 

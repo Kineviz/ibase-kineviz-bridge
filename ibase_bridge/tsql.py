@@ -149,33 +149,81 @@ def cast_text(col: str, sql_type: Optional[str] = None) -> str:
 # ----- big id lists ---------------------------------------------------------
 
 OPENJSON_MIN_VERSION = 13  # SQL Server 2016
+OPENJSON_MIN_COMPAT = 130  # ...and the DATABASE must be at this compatibility level
+
+# The oldest engine this bridge works on. SQL Server 2012 introduced
+# `OFFSET ... FETCH NEXT`, and Kineviz pages every result set, so 2008 R2 and
+# earlier cannot be supported without rewriting paging around a windowed subquery.
+MIN_SUPPORTED_MAJOR = 11  # SQL Server 2012
+
+RELEASE_NAMES = {
+    9: "2005", 10: "2008 / 2008 R2", 11: "2012", 12: "2014", 13: "2016",
+    14: "2017", 15: "2019", 16: "2022", 17: "2025",
+}
+
+
+def describe_server(major, compat=None, edition=""):
+    """Plain words about what this server can and cannot do here."""
+    name = RELEASE_NAMES.get(major, "major version {}".format(major))
+    if "azure" in (edition or "").lower():
+        name = "Azure SQL"
+    if major < MIN_SUPPORTED_MAJOR:
+        return {"supported": False, "name": name, "level": "error", "note":
+                "SQL Server {} is too old for this bridge. Paging uses OFFSET/FETCH, "
+                "which arrived in SQL Server 2012.".format(name)}
+    if major >= OPENJSON_MIN_VERSION and (compat or 0) >= OPENJSON_MIN_COMPAT:
+        return {"supported": True, "name": name, "level": "ok", "note":
+                "Fully supported."}
+    if major >= OPENJSON_MIN_VERSION:
+        return {"supported": True, "name": name, "level": "warn", "note":
+                "Supported. This database is at compatibility level {}, below 130, so "
+                "OPENJSON is unavailable and large selections are sent as XML instead - "
+                "which works, just less directly.".format(compat)}
+    return {"supported": True, "name": name, "level": "warn", "note":
+            "Supported. OPENJSON arrived in SQL Server 2016, so large selections are "
+            "sent as XML instead - which works, just less directly."}
 
 
 def id_list_sql(column: str, values: Sequence[Any], params: List[Any],
                 param_types: List[Any], sql_type: Optional[str] = None,
                 openjson: bool = True) -> str:
-    """`column IN (...)` for any number of values.
+    """`column IN (...)` for any number of values, on any supported server.
 
-    Small lists become a plain IN, which gives the best plans and reads clearly in
-    a log. Large ones become a single JSON parameter unpacked by OPENJSON, because
-    2100 parameters is a hard ceiling and Kineviz sends expand queries carrying
-    tens of thousands of ids.
+    Small lists become a plain IN: best plans, and readable in a log. Large ones
+    must not, because 2100 parameters is a hard ceiling and Kineviz sends expand
+    queries carrying tens of thousands of ids.
 
-    OPENJSON rather than STRING_SPLIT for two reasons: its WITH clause declares the
-    column type, so there is no hidden text-to-number conversion that would stop the
-    join using an index; and JSON has no delimiter a record id could contain.
+    Two ways to send a long list as a *single* parameter:
+
+    * **OPENJSON**, on SQL Server 2016 and later. Its WITH clause declares the
+      column type, so there is no hidden text-to-number conversion to stop the join
+      using an index, and JSON has no delimiter a record id could contain.
+    * **XML shredding**, on anything older. Same one-parameter property, same
+      explicit cast, and it has worked since SQL Server 2005 — so a 2012 or 2014
+      server handles a selection of any size rather than failing at id 2,101.
     """
     if not values:
         return "1 = 0"
-    if len(values) <= INLINE_ID_MAX or not openjson:
+    if len(values) <= INLINE_ID_MAX:
         holes = ", ".join("?" for _ in values)
         params.extend(values)
         param_types.extend(sql_type for _ in values)
         return "{} IN ({})".format(column, holes)
-    params.append(json.dumps([_jsonable(v) for v in values], separators=(",", ":")))
+
+    if openjson:
+        params.append(json.dumps([_jsonable(v) for v in values], separators=(",", ":")))
+        param_types.append("nvarchar_max")
+        return "{} IN (SELECT [value] FROM OPENJSON(?) WITH ([value] {} '$'))".format(
+            column, openjson_type(sql_type))
+
+    params.append("".join("<i>{}</i>".format(_xml_escape(v)) for v in values))
     param_types.append("nvarchar_max")
-    return "{} IN (SELECT [value] FROM OPENJSON(?) WITH ([value] {} '$'))".format(
-        column, openjson_type(sql_type))
+    return ("{} IN (SELECT T.c.value('.', '{}') FROM (SELECT CAST(? AS xml)) AS X(x) "
+            "CROSS APPLY x.nodes('/i') AS T(c))".format(column, openjson_type(sql_type)))
+
+
+def _xml_escape(v: Any) -> str:
+    return (str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
 def openjson_type(sql_type: Optional[str]) -> str:
@@ -228,10 +276,16 @@ class Dialect:
     name = "sqlserver"
     placeholder = "?"
 
-    def __init__(self, server_major: int = 13, column_types: Optional[Dict[str, str]] = None):
+    def __init__(self, server_major: int = 13, column_types: Optional[Dict[str, str]] = None,
+                 compat_level: int = 130):
         self.server_major = server_major
         self.column_types = column_types or {}
-        self.supports_openjson = server_major >= OPENJSON_MIN_VERSION
+        # OPENJSON needs a 2016+ engine AND a database left at compatibility level
+        # 130 or higher. A database restored from an older server keeps its old
+        # level, so a modern engine is not on its own enough.
+        self.compat_level = compat_level
+        self.supports_openjson = (server_major >= OPENJSON_MIN_VERSION
+                                  and compat_level >= OPENJSON_MIN_COMPAT)
 
     def quote(self, name: str) -> str:
         return quote(name)
