@@ -49,6 +49,12 @@ To Kineviz it looks like an ordinary graph database, so nothing inside Kineviz h
 
 ## Quick start
 
+**New here? [docs/quickstart.md](docs/quickstart.md) walks the whole thing** — set up the demo,
+connect Kineviz, pull a graph, and expand it — in about fifteen minutes, with no iBase licence
+and no real data.
+
+The short version:
+
 ```bash
 ./setup
 ```

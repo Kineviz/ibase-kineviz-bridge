@@ -87,6 +87,12 @@ class QueryProcessor:
 
     def execute(self, query: str) -> QueryOutcome:
         self.last_sql = None
+        # Clear the backend's last statement too. Queries answered without touching
+        # the database - schema, counts, the liveness probe - would otherwise be
+        # logged next to whatever SQL the PREVIOUS query generated, and that pairing
+        # of Cypher with the SQL it became is the log's whole value.
+        if hasattr(self.backend, "last_sql"):
+            self.backend.last_sql = ""
         ql = query.lower().strip()
 
         if "call schema" in ql:
