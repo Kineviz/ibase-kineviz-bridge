@@ -1,8 +1,8 @@
 # Quick start
 
 **Fifteen minutes, from nothing to a graph you can click around.** You need Docker, Python, and
-a Kineviz account — everything else the setup script installs. No iBase licence and no real
-data — `./setup` builds a demo database that has the shapes a real one has.
+a Kineviz account. Everything else the setup script installs. No iBase licence and no real
+data either: `./setup` builds a demo database with the shapes a real one has.
 
 Everything below was run exactly as written, against
 <https://graphxr.kineviz.com/> in a browser. The numbers are the ones it returned.
@@ -31,7 +31,7 @@ Run the command it printed. You should see:
       Proxy API URL:  http://localhost:7073/ibase/demo
 ```
 
-**What is in the demo:** 12 people, 5 organisations, 10 accounts, and the links between them —
+**What is in the demo:** 12 people, 5 organisations, 10 accounts, and the links between them:
 who works for whom, who owns which account, and money moving between accounts.
 
 ---
@@ -49,11 +49,11 @@ account for the browser and for Desktop.
 | --- | --- | --- |
 | Where | <https://graphxr.kineviz.com/> | [download](https://github.com/Kineviz/kineviz-desktop/releases/latest) |
 | To install | nothing | ~200 MB |
-| Reaching the bridge on this machine | your browser asks permission once — click **Allow** | works straight away |
+| Reaching the bridge on this machine | your browser asks permission once; click **Allow** | works straight away |
 | Cost | account required | free for individual use, forever |
 
-The browser is the quicker start — nothing to download. Desktop is worth it if you would rather
-not deal with the permission prompt, or if your browser refuses rather than asks (see below).
+The browser is the quicker start, with nothing to download. Choose Desktop if you would rather
+skip the permission prompt, or if your browser refuses rather than asks (see below).
 
 If you want Desktop, `uname -sm` tells you which build:
 
@@ -87,7 +87,7 @@ Click **Confirm**.
 >
 > **In a browser, your browser will ask permission** the first time, because the bridge is
 > running on your machine while Kineviz is served from the web. Click **Allow**. If you see no
-> prompt *and* nothing loads, your browser is refusing rather than asking — use Desktop instead.
+> prompt *and* nothing loads, your browser is refusing rather than asking. Use Desktop instead.
 
 You know it worked when the schema panel lists **3 record types** (Person, Organization,
 Account) and **3 link types** (WORKS_FOR, OWNS, TRANSFERRED_TO).
@@ -96,7 +96,26 @@ Account) and **3 link types** (WORKS_FOR, OWNS, TRANSFERRED_TO).
 
 ## 4. Pull some nodes and relationships
 
-Open the **Query** panel — the `</>` icon in the left strip — and replace what is there with:
+There are two ways in. Start with the first.
+
+### The search bar, if you would rather not write Cypher
+
+Click **Search nodes or build a pattern…** at the top left. It offers the record types the
+bridge found in your database:
+
+![The search bar, showing Account, Organization and Person](images/query-bar.png)
+
+Those three came from your SQL Server tables a moment ago. Pick **Person** and it becomes a
+chip. The bar then offers the links leading out of it, `WORKS_FOR` and `OWNS`, and after that
+the record types at the far end. Build up `Person —WORKS_FOR→ Organization`, set a small
+limit, and press the **▶** at the right.
+
+**Set the limit before you run.** It remembers what you last used rather than resetting, and a
+large number on a real database pulls a graph too dense to read.
+
+### The Query panel, when you want the exact query
+
+Open it with the `</>` icon in the left strip, and replace what is there with:
 
 ```cypher
 MATCH (p:Person)-[r:WORKS_FOR]->(o:Organization) RETURN p, r, o LIMIT 25
@@ -111,7 +130,7 @@ Click **Run**. The panel reports:
 Eight people, five organisations, nine employment links. Close the panel with the same `</>`
 icon to see the graph.
 
-**If the dots are piled on top of each other**, that is normal — a query drops everything at
+**If the dots are piled on top of each other**, that is normal: a query drops everything at
 the same point. Click the **Fly Out** button in the bottom toolbar (four outward arrows) to
 frame the graph, and the **layout** icon in the left strip → **Force** → **Run** to spread it
 out.
@@ -134,7 +153,7 @@ JOIN [dbo].[Organization] AS v1 ON v1.[organization_id] = e0.[organization_id]
 ORDER BY v0.[person_id], v1.[organization_id], e0.[employment_id];
 ```
 
-Ordinary SQL. Nothing was copied or exported — that ran against SQL Server when you clicked Run.
+Ordinary SQL. Nothing was copied or exported. That ran against SQL Server when you clicked Run.
 
 ### A few more to try
 
@@ -152,18 +171,23 @@ MATCH (a:Account)-[r:TRANSFERRED_TO]-(b:Account) RETURN a, r, b LIMIT 50
 MATCH (p:Person) RETURN p.full_name, p.country_code, p.risk_score
 ```
 
-The last one comes back as a table, not dots — the bridge decides which shape to return from
-what you asked for.
+The last one comes back as a table rather than dots. The bridge decides which shape to return
+from what you asked for.
 
 ---
 
 ## 5. Select a few nodes and expand
 
-**Expand** is the question "what else do these connect to?", and it is the thing you will do
-most.
+**Expand** asks "what else do these connect to?". You will use it more than anything else.
 
-1. Click a **Person** dot. Shift-drag to add more, or hold Ctrl and drag a box around several.
-2. Right-click one of them → **Expand**.
+1. Click a **Person** dot. Shift-drag to add more, or press **Ctrl+A** to take everything.
+2. Right-click one of them → **Expand**, and choose what to follow:
+
+![Right-click menu with Expand open, offering All, OWNS and WORKS_FOR](images/expand.png)
+
+**All** follows every link. Or pick one: `OWNS` shows only the accounts these people own.
+The legend on the right counts what is selected against what is on the canvas: `Person 8/8` here
+means all eight people are selected.
 
 Starting from the 13-node graph above and expanding **three people**:
 
@@ -178,8 +202,8 @@ accounts, and now you can see which.
 Expand again from the new Accounts and the transfers between them appear. That is the loop:
 pull a little, expand, follow what looks interesting.
 
-> **Why this is the interesting one.** Kineviz writes *every selected node's id* into the expand
-> query. Select a thousand dots and the query carries a thousand ids — and SQL Server refuses
+> **Why Expand is the query that breaks things.** Kineviz writes *every selected node's id*
+> into the expand query. Select a thousand dots and the query carries a thousand ids, and SQL Server refuses
 > more than 2,100 parameters in a single statement. In real captured traffic, 22% of expands
 > exceeded that, and one carried 42,214 ids. The bridge sends large selections as a single JSON
 > parameter instead, so this keeps working when you select the whole canvas. Try it.
@@ -206,7 +230,7 @@ Add a second Kineviz project pointing at `http://localhost:7074/ibase/ibase`, th
 MATCH (a)-[r:Associate]->(z) RETURN a, r, z LIMIT 50
 ```
 
-One link type, three different kinds of endpoint — Person→Person, Person→Organization,
+One link type, three different kinds of endpoint: Person→Person, Person→Organization,
 Organization→Vehicle. The bridge runs a separate indexed query for each and merges them.
 
 ---
@@ -229,19 +253,19 @@ database**. Fill in server, port, database and login, then **Test**:
   version          16.0.4265.3
   compatibility    160
   tables           412
-  can it write?    ● no — writes are refused, which is what we want
+  can it write?    ● no, writes are refused
 ```
 
-Read that last line. It asks the server what your login may actually do, and warns you if the
-account can change data. **Test and use** switches the running bridge over without a restart.
-Your password is used to connect and then dropped — it is never written to a file. The panel
+It asks the server what your login may actually do, and warns you if the account can change
+data. **Test and use** switches the running bridge over without a restart.
+Your password is used to connect and then dropped. It is never written to a file. The panel
 shows the `export IBASE_CONNECTION_STRING=…` line for making it permanent.
 
 **3. Press Read the database.** It works out which tables are records and which are links, and
 for iBase link tables it asks the data which record types they actually join.
 
-**4. Name the links, and check their direction.** This is the step not to skip. Two things no
-database can tell you: what a link is **called**, and which way it **points**. A backwards link
+**4. Name the links, and check their direction.** Two things no database can tell you: what a link
+is **called**, and which way it **points**. A backwards link
 returns no rows rather than an error, so it is the mistake most likely to go unnoticed. The
 editor runs every link **both ways** against your data and shows you real rows:
 
@@ -249,8 +273,8 @@ editor runs every link **both ways** against your data and shows you real rows:
 WORKS_FOR    from Employment                        [flip ⇄] [check direction]
 Person ──▶ Organization
 
-  ✎ Both directions join, so the database cannot decide this one for you —
-    only you know which sentence is true. Read a row:
+  ✎ Both directions join, so the database cannot decide this one for you.
+    Only you know which sentence is true. Read a row:
     "Avery Chen → Northwind Logistics".
 ```
 
@@ -265,18 +289,18 @@ writes the same draft as a file for you to edit by hand.
 ## When something looks wrong
 
 **<http://localhost:7073/studio>** first. It shows whether the bridge is running, whether the
-database is answering, and the last query that failed — in plain words rather than a stack
+database is answering, and the last query that failed, in plain words rather than a stack
 trace.
 
 Then `logs/queries.jsonl`, which pairs every Cypher query with the SQL it became.
 
-A few things behave in ways worth knowing:
+A few behaviours to expect:
 
 - **A query returns nothing, with no error.** Usually a link pointing the wrong way. Check it
   in the editor.
 - **An error mentioning something "is not supported".** That is deliberate. The bridge refuses
-  what it cannot translate — variable-length paths, `OPTIONAL MATCH`, `WITH`, `UNWIND`,
-  `HAVING`, regular expressions — rather than quietly returning the wrong answer. An empty
+  what it cannot translate (variable-length paths, `OPTIONAL MATCH`, `WITH`, `UNWIND`,
+  `HAVING`, regular expressions) rather than quietly returning the wrong answer. An empty
   canvas is too easily mistaken for "nothing matched".
 - **Everything is read-only.** `CREATE`, `MERGE`, `SET` and `DELETE` are refused twice over: by
   the bridge, and by the SQL login itself.

@@ -10,7 +10,7 @@ python3 -m pytest                  # the same tests
 They run against the mapping files and a small fake connection, so the whole suite finishes in
 about a second on a machine with nothing installed. **Keep it that way.** A test that needs a
 database belongs in the integration job. A test that needs the web layer should skip when
-FastAPI is absent — the four browser-reachability tests show the pattern.
+FastAPI is absent. The four browser-reachability tests show the pattern.
 
 If you add a dependency to a test, check it in a bare environment before pushing, or CI will
 find it for you:
@@ -28,9 +28,9 @@ python3 scripts/probe_queries.py http://localhost:7073/ibase/demo
 ```
 
 `probe_queries.py` fires ~33 queries at a running bridge and reports what each returned. It
-also checks that the **unsupported** ones were refused — see below for why that matters.
+also checks that the **unsupported** ones were refused.
 
-## Two rules worth stating
+## Two rules
 
 **Fail loudly.** A query this bridge cannot translate must return an error a person can read,
 never an empty graph. An empty canvas looks exactly like "nothing matched", and someone will
@@ -42,18 +42,19 @@ backwards link returns no rows rather than an error. Discovery *proposes*; a per
 ## Before you change the interesting parts
 
 Read [`docs/design-notes.md`](docs/design-notes.md). It covers the decisions that are not
-obvious from the code, including three that were wrong the first time and what testing showed —
+obvious from the code, including three that were wrong the first time and what testing showed:
 the node id scheme, how Expand branches, and the T-SQL emitter. Each has a constraint behind it
 that is easy to break by accident.
 
 ## Adding a test
 
-Name it after the behaviour, not the function: `test_parallel_links_between_the_same_pair_stay_distinct`
+Name it after the behaviour, not the function:
+`test_parallel_links_between_the_same_pair_stay_distinct`
 rather than `test_convert_rows`. Several tests in the suite exist because something broke in a
 way nobody noticed for a while; the name is what stops it happening twice.
 
 ## Style
 
 Match what is there. Comments explain **why**, especially where the reason is a constraint you
-cannot see from the code — SQL Server's parameter ceiling, what Kineviz sends back on Expand,
+cannot see from the code: SQL Server's parameter ceiling, what Kineviz sends back on Expand,
 what iBase permits.

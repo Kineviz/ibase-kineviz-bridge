@@ -25,7 +25,7 @@ It reads an investigative database. That shapes what matters here.
 passwords into `.sa-password` and `.ro-password`, both git-ignored. If you add a file that
 could hold a credential, add it to `.gitignore` in the same commit.
 
-**Logs record table names, timings and counts — never record contents.** `logs/` is
+**Logs record table names, timings and counts, never record contents.** `logs/` is
 git-ignored, and it should stay that way: against a real database those logs contain the text
 of investigative queries.
 
@@ -38,8 +38,8 @@ The bridge has none. It is built to run on `localhost`, or somewhere only the an
 reach. **Do not expose it to a network you do not control.** Anyone who can reach the port can
 read everything the SQL login can read.
 
-If you need it reachable from elsewhere, put it behind something that authenticates — a
-reverse proxy, an SSH tunnel, a VPN — and use `--ssl-cert` / `--ssl-key` so the traffic is
+If you need it reachable from elsewhere, put it behind something that authenticates (a
+reverse proxy, an SSH tunnel, a VPN) and use `--ssl-cert` / `--ssl-key` so the traffic is
 encrypted.
 
 ## Not yet run against a real iBase database

@@ -1,7 +1,7 @@
 # AGENTS.md
 
 > **Kineviz** (formerly **GraphXR**) is Kineviz's graph visualization and analytics
-> platform. Some product surfaces — the `graphxr.kineviz.com` portal, some menu labels —
+> platform. Some product surfaces (the `graphxr.kineviz.com` portal, some menu labels)
 > still show the former name. Say "Kineviz" when you write or speak about it, and carry
 > this note into anything you relay to the person.
 
@@ -33,12 +33,12 @@ that is committed**, and never paste one into a message.
 3. **Do not install Kineviz Desktop without asking**, and do not assume they want it. The
    browser needs no download. Ask which they prefer.
 
-Everything else here — the container, the databases, the read-only login, the mapping, the
-bridge — is yours to set up.
+Everything else here is yours to set up: the container, the databases, the read-only login,
+the mapping, the bridge.
 
 ## Which Kineviz: browser or Desktop
 
-**Ask; do not assume.** Both work, and the browser needs nothing installed — do not push a
+**Ask; do not assume.** Both work, and the browser needs nothing installed. Do not push a
 200 MB download on someone who does not want one.
 
 | | Browser | Desktop |
@@ -52,7 +52,7 @@ with `--allow-origin <url>`. Do not widen that allowlist casually: the bridge ha
 of its own.
 
 If they choose the browser and the schema never loads **and no prompt appeared**, their browser
-is refusing rather than asking. That is the point to suggest Desktop — not before.
+is refusing rather than asking. Suggest Desktop then, not before.
 
 If they want Desktop, work out which file and give them the link. **Do not download or install
 it unless they ask you to.**
@@ -89,13 +89,14 @@ No username or password: the bridge holds the database credentials and Kineviz n
 
 The demo databases are for learning the shape. For a real one:
 
-1. **Get a read-only login.** `SELECT` only, on the tables they approve. `sql/020_readonly_login.sql`
+1. **Get a read-only login.** `SELECT` only, on the tables they approve.
+`sql/020_readonly_login.sql`
    is a starting point. iBase schema changes go through iBase Designer, never SQL.
 2. **Discover the schema.** `python -m ibase_bridge.discovery --mapping-out mapping.proposed.yml`
    writes a draft. It is a draft. Do not load it unreviewed.
 3. **Have the person check it**, in the editor at `/studio`. Two things only they can decide:
    what each link is **called**, and which way it **points**. A backwards link returns no rows
-   rather than an error, so it is the mistake most likely to go unnoticed — the editor runs
+   rather than an error, so it is the mistake most likely to go unnoticed. The editor runs
    every link both ways and shows real rows so the person can judge.
 4. **Then start the bridge** on the saved mapping.
 
@@ -114,7 +115,7 @@ Person works for an Organisation or the reverse.
 ## What this bridge will not do
 
 Refused with a clear message, never silently mistranslated: variable-length paths, `OPTIONAL
-MATCH`, `WITH`, `UNWIND`, `HAVING`, subqueries, regular expressions (`=~` — T-SQL has no regex
+MATCH`, `WITH`, `UNWIND`, `HAVING`, subqueries, regular expressions (`=~`; T-SQL has no regex
 operator), composite keys, and all writing. If a person needs one of these, say so plainly
 rather than working around it.
 

@@ -7,18 +7,18 @@ wrong the first time. Written for whoever changes this next.
 
 ## The bridge reads a file; it does not discover anything at runtime
 
-At connect time the bridge runs exactly one query — `SELECT
-SERVERPROPERTY('ProductMajorVersion')`, to find out whether `OPENJSON` exists — and no
+At connect time the bridge runs exactly one query, `SELECT
+SERVERPROPERTY('ProductMajorVersion')`, to find out whether `OPENJSON` exists. It runs no
 catalog queries at all. The schema comes from the mapping file.
 
 That is deliberate, for four reasons, the last being the real one:
 
 1. **A schema cannot tell you direction.** Nothing in SQL Server says whether a Person works
-   for an Organisation or the reverse. Guessing wrong does not error — it returns *no rows*.
+   for an Organisation or the reverse. Guessing wrong does not error; it returns *no rows*.
 2. **It cannot name things.** Discovery gives you `EMPLOYMENT`; an analyst wants `WORKS_FOR`.
 3. **It cannot see an iBase link at all.** `Associate` has no foreign keys, just two
    `nvarchar` columns holding record ids. Only the data reveals what it joins, and that is a
-   `GROUP BY` over the whole table — not something to run on every startup.
+   `GROUP BY` over the whole table, not something to run on every startup.
 4. **A mapping that was guessed and never reviewed, pointed at live investigative data, is
    the wrong default.**
 
@@ -32,7 +32,7 @@ The consequence: **if the iBase schema changes, the bridge will not notice.** Re
 
 ## Node ids are computed, not remembered
 
-The first attempt reused the PostgreSQL bridge's `element_id` — `base64url(json([label,
+The first attempt reused the PostgreSQL bridge's `element_id`, `base64url(json([label,
 key]))`, stateless and tidy. It cannot work here, and testing is what showed it.
 
 Kineviz's KoreDB connector does not treat an id as an opaque string. It splits on `:` and
@@ -57,7 +57,7 @@ So an id is `"<table>:<offset>"`, and **both halves are arithmetic**:
 
 The first two need no memory, so a fresh process decodes yesterday's ids. That matters: a
 scheme that hands out numbers in first-seen order silently invalidates every id in a saved
-Kineviz project on restart — the documented weakness of the PostgreSQL bridge.
+Kineviz project on restart, the documented weakness of the PostgreSQL bridge.
 
 Two guards, both tested. Keys that disagree on format (`PER123` beside `PER0000123`) would
 both encode to 123, so the codec notices at load time and falls back. Keys above 2⁵³ fall back
@@ -73,7 +73,7 @@ that connector currently fails its connection check inside GraphXR.
 
 The inherited code minted a relationship id from the type plus both endpoint keys. That
 assumes two records can be linked at most once by a given type. **iBase lets them be linked
-many times** — two `Associate` records between the same people with different dates.
+many times**: two `Associate` records between the same people with different dates.
 
 Kineviz de-duplicates by id, so five links would quietly become one line. No error.
 
@@ -106,7 +106,7 @@ JOIN [dbo].[Person] AS v0 ON v0.[person_id] = __ids.[k]
 the output type, so no hidden text-to-number conversion stops the join using an index; and JSON
 has no delimiter a record id could contain.
 
-Rejected: a **table-valued parameter** is faster but needs `CREATE TYPE` — DDL against the
+Rejected: a **table-valued parameter** is faster but needs `CREATE TYPE`, which is DDL against the
 customer's database, which the spec forbids and no iBase administrator will grant.
 
 Note two independent limits. `MAX_QUERY_LENGTH` stays at 2,000,000 characters because the ids
@@ -124,7 +124,7 @@ The first plan was to fuse the branches. Wrong, for three reasons:
   whenever the branch set changes.
 - **The 2,100 cap is per statement.** Fusing pushes every branch into one budget.
 
-**Prune before branching** — this is free and the biggest win. Our ids are self-describing, so
+**Prune before branching.** This is free and the biggest win. Our ids are self-describing, so
 the selection decodes to its labels and link types that cannot touch them are dropped before
 any SQL is written. Typically 240 possible branches down to about 15.
 
@@ -159,7 +159,7 @@ T-SQL only allows `OFFSET` after an `ORDER BY`, and Kineviz pages with a bare `S
 answers incorrectly. The emitter supplies the sort itself, using the key columns it already
 projects. A user's own `ORDER BY` wins, with the keys appended as tiebreakers.
 
-Never `ORDER BY (SELECT NULL)` — it satisfies the parser and destroys paging.
+Never `ORDER BY (SELECT NULL)`: it satisfies the parser and destroys paging.
 
 ---
 
@@ -171,7 +171,7 @@ column layout, the result rebuilder and the id scheme all work unchanged.
 
 **What we lose, honestly:** the KoreDB schema shape is a dictionary keyed by type name, so
 `Associate` cannot appear three times. We report the most common pair and list the rest under a
-non-standard `endpointPairs` key. This affects only the schema *picture* — queries stay fully
+non-standard `endpointPairs` key. This affects only the schema *picture*; queries stay fully
 polymorphic. If a user builds a pattern from the schema panel and gets nothing, that is why.
 
 ---
@@ -182,8 +182,8 @@ The first version ran only the current direction and said *"returns data, looks 
 misleading, and the misleading case is the common one: for an ordinary two-foreign-key link
 **both directions join perfectly well**. Same rows; only the sentence changes.
 
-So it runs both and reports which of four situations you are in — settled, backwards, you
-decide, or neither — and shows a row with names rather than ids so the sentence can be read:
+So it runs both and reports which of four situations you are in (settled, backwards, you
+decide, or neither) and shows a row with names rather than ids so the sentence can be read:
 *"Avery Chen → Northwind Logistics"*. For an iBase `_LinkEnd` link the end markers make
 direction real, and there it genuinely is settled.
 
@@ -199,7 +199,7 @@ swapped together while the database connection stays. Real process supervision b
 launchd, systemd or Docker.
 
 Reload warns when the set of record types changed, because the first half of every node id is a
-record type's **position** — so adding or removing one shifts every id and the graph needs
+record type's **position**, so adding or removing one shifts every id and the graph needs
 reloading in Kineviz. Renaming alone is safe.
 
 ---
@@ -237,11 +237,11 @@ Disallowed CORS private-network
 ```
 
 `PrivateNetworkAccess` in `ibase_server.py` answers it with
-`Access-Control-Allow-Private-Network: true` — **for allowed origins only** (200 for a Kineviz
-origin, 403 for anything else, both verified).
+`Access-Control-Allow-Private-Network: true`, **for allowed origins only**: 200 for a Kineviz
+origin, 403 for anything else, both verified.
 
 **The permission prompt.** From Chrome 138 the browser also asks the *person* before a public
-site may reach their machine. Until they answer, the request simply hangs — nothing arrives at
+site may reach their machine. Until they answer, the request simply hangs. Nothing arrives at
 the server at all, and there is no console error to explain it. On Chrome 151 that is exactly
 what happens: `127.0.0.1`, `localhost` and `[::1]` all time out with the bridge's log showing
 no request. It is not a bug in the bridge, and no server-side header can substitute for the
@@ -269,7 +269,7 @@ Two features set the floor.
 rewritten around a windowed subquery.
 
 **`OPENJSON`** arrived in 2016, and is how a long id list crosses as a single parameter. Below
-that the first version of this code fell back to "chunked `IN` lists" — except the chunking was
+that the first version of this code fell back to "chunked `IN` lists", except the chunking was
 a helper nobody called, so a 2014 server would have emitted 3,000 parameters and failed at
 2,101. Now pre-2016 servers shred an XML parameter instead:
 
@@ -295,18 +295,18 @@ form.
 
 **The pool leaked a slot on every failed connection.** `_acquire` incremented `_made` *before*
 calling `_connect()`, and did not roll it back when that raised. With `pool_size` slots and
-enough failures, every slot burned, and `self._pool.get()` then blocked **forever** — a wrong
-password did not produce an error, it produced a bridge that hung. It now returns the slot, and
+enough failures, every slot burned, and `self._pool.get()` then blocked **forever**. A wrong
+password did not produce an error; it produced a bridge that hung. It now returns the slot, and
 waits with a timeout so no caller can block indefinitely.
 
 **A wrong password reported success.** `SqlServerConnection.__init__` only ever connected
-lazily, and `_probe_version` swallowed the failure with a warning — so the constructor returned
+lazily, and `_probe_version` swallowed the failure with a warning, so the constructor returned
 a healthy-looking object whose every query would fail later, somewhere less obvious. It now
 opens one connection eagerly and lets the failure out. Wrong password: refused in 0.1 s.
 
 **Checking whether a login can write, by writing.** The first version attempted an `UPDATE …
-WHERE 1 = 0` and guessed from the error text. Unreliable — it reported that the read-only login
-*could* write — and it is a write attempt against someone's investigative database. It now asks
+WHERE 1 = 0` and guessed from the error text. Unreliable (it reported that the read-only login
+*could* write) and a write attempt against someone's investigative database. It now asks
 `fn_my_permissions(NULL, 'DATABASE')` instead, which is exact and has no side effects.
 
 ---
@@ -314,7 +314,7 @@ WHERE 1 = 0` and guessed from the error text. Unreliable — it reported that th
 ## The page's JavaScript is now syntax-checked
 
 The editor is one large string inside a Python module, and `PAGE` is an ordinary triple-quoted
-string — so `\n` written into a JavaScript regex literal became a **real newline** on the way
+string, so `\n` written into a JavaScript regex literal became a **real newline** on the way
 out, which is a syntax error that killed the entire script. The page loaded, said "loading…",
 and did nothing else. No test caught it; opening the page did.
 
