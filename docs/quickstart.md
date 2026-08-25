@@ -237,14 +237,20 @@ Organization→Vehicle. The bridge runs a separate indexed query for each and me
 
 ## 7. Point it at your own database
 
-All of this happens in the editor at **<http://localhost:7073/studio>**.
+Everything here happens in the editor at **<http://localhost:7073/studio>**. You will not need
+to write any YAML.
 
-**1. Get a read-only login.** `SELECT` only, on the tables you are allowed to read.
-`sql/020_readonly_login.sql` creates one. iBase schema changes go through iBase Designer, never
-SQL.
+### Get a read-only login first
 
-**2. Point the bridge at your database.** In the editor, **Database → Connect a different
-database**. Fill in server, port, database and login, then **Test**:
+`SELECT` only, on the tables you are allowed to read. `sql/020_readonly_login.sql` creates one.
+iBase schema changes go through iBase Designer, never SQL.
+
+### Connect
+
+**Database → Connect a different database.** Fill in server, port, database and login, then
+**Test**:
+
+![The Database panel](images/studio-database.jpg)
 
 ```
 ✓ 2022 · Developer Edition (64-bit)
@@ -256,33 +262,62 @@ database**. Fill in server, port, database and login, then **Test**:
   can it write?    ● no, writes are refused
 ```
 
-It asks the server what your login may actually do, and warns you if the account can change
-data. **Test and use** switches the running bridge over without a restart.
-Your password is used to connect and then dropped. It is never written to a file. The panel
-shows the `export IBASE_CONNECTION_STRING=…` line for making it permanent.
+That last check asks the server what your login may actually do, and warns you if the account
+can change data. **Test and use** switches the running bridge over, no restart. Your password
+opens the connection and is then dropped; it is never written to a file. The panel prints the
+`export IBASE_CONNECTION_STRING=…` line for making it permanent.
 
-**3. Press Read the database.** It works out which tables are records and which are links, and
-for iBase link tables it asks the data which record types they actually join.
+### Read the schema
 
-**4. Name the links, and check their direction.** Two things no database can tell you: what a link
-is **called**, and which way it **points**. A backwards link
-returns no rows rather than an error, so it is the mistake most likely to go unnoticed. The
-editor runs every link **both ways** against your data and shows you real rows:
+Press **Read the database**. It sorts your tables into records and links:
 
-```
-WORKS_FOR    from Employment                        [flip ⇄] [check direction]
-Person ──▶ Organization
+![Discovered links and records](images/studio-schema.jpg)
 
-  ✎ Both directions join, so the database cannot decide this one for you.
-    Only you know which sentence is true. Read a row:
-    "Avery Chen → Northwind Logistics".
-```
+For iBase link tables it also asks the data which record types they actually join, rather than
+assuming.
 
-**5. Save mapping**, then **Reload bridge**. Your Kineviz project is now querying your own
-database.
+Each row shows the source table, the row count, and why it guessed what it did. Untick
+**include** to leave a table out.
+
+### Name the links, and check their direction
+
+This is the part only you can do. Type over `EMPLOYMENT` to make it `WORKS_FOR`. Then press
+**Check direction**:
+
+![A link with real rows and a verdict](images/studio-direction.jpg)
+
+The editor runs the link **both ways** against your data and tells you which of four situations
+you are in:
+
+| | What it means |
+| --- | --- |
+| ✓ **Settled** | Only this direction returns rows. |
+| ⚠ **Backwards** | This one matches nothing; flipping returns rows. Press **Flip direction**. |
+| ✎ **You decide** | Both join. Read the row and pick the sentence that is true. |
+| ✗ **Neither** | The table has rows but nothing matches. Key columns or prefixes are wrong. |
+
+A backwards link returns no rows rather than an error, which is why this is worth a minute per
+link rather than a guess.
+
+### Check what each column becomes
+
+**Table data** puts your column names next to the names Kineviz will use:
+
+![Table data with column roles](images/studio-table-data.jpg)
+
+Unmapped columns are greyed out and counted. They will be invisible in Kineviz.
+
+### Save and reload
+
+**Save mapping** writes the YAML (previous kept as `.bak`) and refuses to write one that will
+not load. **Reload bridge** applies it live. **Show the file** prints the YAML if you want to
+see what your clicks built.
+
+Your Kineviz project is now querying your own database. If the record types changed, reload the
+graph in Kineviz too, because node ids move when the set of record types does.
 
 Prefer the command line? `python -m ibase_bridge.discovery --mapping-out mapping.proposed.yml`
-writes the same draft as a file for you to edit by hand.
+writes the same draft as a file to edit by hand.
 
 ---
 

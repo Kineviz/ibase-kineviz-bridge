@@ -139,31 +139,14 @@ Not sure which? `uname -sm` tells you.
 
 ## Connecting to your own database
 
-The schema editor has a **Database** section: press **Connect a different database**, fill in
-server, port, database and login, then **Test** or **Test and use**.
+The demo is for learning the shape. When you are ready for a real database, you do it in the
+browser rather than by editing YAML: connect, read the schema, name the links, check their
+direction, save. That is **[Managing the schema in the browser](#managing-the-schema-in-the-browser)**
+below.
 
-Test reports what it found, in words:
-
-```
-✓ 2022 · Developer Edition (64-bit)
-  Fully supported.
-
-  version          16.0.4265.3
-  compatibility    160
-  tables           6
-  can it write?    ● no, writes are refused
-```
-
-It asks the server what the login is permitted to do rather than attempting a write, and warns
-you if the account can change data. Use a
-`SELECT`-only login. `sql/020_readonly_login.sql` creates one.
-
-**Test and use** points the running bridge at that database immediately, no restart. It is held
-in memory only: **the bridge never writes a password to disk**. To make it permanent, the panel
-shows the `export IBASE_CONNECTION_STRING=…` line to put in your environment.
-
-Common failures are explained rather than passed through raw: a self-signed certificate
-rejected by driver 18, a wrong password, an unreachable host, a missing ODBC driver.
+The one thing to sort out first is a **read-only login** with `SELECT` and nothing else.
+`sql/020_readonly_login.sql` creates one, and the editor checks and tells you if the account
+you gave it can write.
 
 ## Connect Kineviz to the bridge
 
@@ -242,88 +225,74 @@ file, which is reviewable and diffable, so you can see when someone changes what
 The consequence: **if the iBase schema changes, the bridge will not notice.** Re-run
 `discover`, compare it with your mapping, restart.
 
-### The schema editor
+### Managing the schema in the browser
 
-The two things a database cannot tell you are what to **call** a link and which way it
-**points**. So there is a small page for exactly those two jobs:
+The mapping file is the bridge's contract, and the editor is how you build and change it
+without hand-writing YAML. Start the bridge with `--studio` and open
+**<http://localhost:7073/studio>**:
 
 ```bash
 python ibase_server.py --mapping config/mapping.demo.yml --studio
-# then open http://localhost:7073/studio
 ```
 
-One bridge serves **one database** with **one mapping file**. To serve a second database, run a
-second bridge on another port (`--port 7074`) and give Kineviz a second project.
+**1. Point it at a database.** The **Database** panel connects to any SQL Server you can reach.
+Test reports the version, whether the compatibility level allows `OPENJSON`, and whether the
+login can write. **Test and use** switches the running bridge over without a restart.
 
-The page opens with three things: whether the bridge is **working**, how to **connect Kineviz**
-to it (with the URL and a copy button), and anything that has gone **wrong**.
+![The Database panel, with fields for server, port, database and login](docs/images/studio-database.jpg)
 
-```
-Bridge status                                      12 queries answered
-  state          ● running
-  database       answering · SQL Server major version 16
-  serving        3 record types, 3 link types
-  mapping file   config/mapping.demo.yml
-  last query     MATCH (p:Person)-[r:WORKS_FOR]->(o:Organization) RETURN p,r,o
-```
+Your password opens the connection and is then dropped. It is never written to the mapping
+file and never logged. The panel prints the `export IBASE_CONNECTION_STRING=…` line for making
+it permanent.
 
-It refreshes every few seconds, so a failed query shows up without you going to find a log:
+**2. Press Read the database.** It sorts the tables into records and links, using one rule: a
+table that points at two others, and that nothing points back at, is a link. Everything else is
+a record.
 
-```
-  ✗ Last query failed: regular-expression matching (=~) is not supported by the
-    SQL Server backend. T-SQL has no regex operator. Use CONTAINS, STARTS WITH
-    or ENDS WITH instead.
-```
+![Discovered links and records, each with rename, flip, check and table-data controls](docs/images/studio-schema.jpg)
 
-Press **Read the database**, and it lists what it found. **Table data** on any record or link
-shows real rows with the original column names alongside the names Kineviz will use:
+Every row carries its source table and row count, and the reasoning behind the guess
+("both ends point at Account and nothing points back at it"). Untick **include** to leave a
+table out; excluding a record also drops the links that needed it, rather than writing a
+mapping that will not load.
 
-```
-Real rows from dbo.Employment, with the names Kineviz will use. Every column is mapped.
+**3. Rename anything.** Type over the name. `EMPLOYMENT` is a table; `WORKS_FOR` is what an
+analyst wants to see on an edge. Renaming a record updates every link that points at it.
 
-employment_id   person_id        organization_id      job_title
-bigint · key    bigint ·         bigint ·             nvarchar ·
-                source end →     target end →         property
-                Person           Organization
-─────────────────────────────────────────────────────────────────
-9001            1001             2001                 Director
-9002            1005             2001                 Logistics Manager
-```
+**4. Check each direction.** Press **Check direction** and the editor runs that link *both ways*
+against your data:
 
-Columns you have not mapped are shown greyed out and counted, because an unmapped column is
-invisible in Kineviz and the usual way to discover that is to go looking for it later.
+![A link showing real rows, with a verdict explaining that both directions join](docs/images/studio-direction.jpg)
 
-**Check direction** on any link shows real rows with names rather than numbers:
-
-```
-WORKS_FOR    from Employment                          [flip] [show rows]
-Person ──▶ Organization
-
-  ✎ Both directions join, so the database cannot decide this one for you.
-    Only you know which sentence is true. Read a row: "Avery Chen → Northwind Logistics".
-
-  Person             Organization
-  Avery Chen      →  Northwind Logistics    job_title=Director
-  Ana Sofía Ríos  →  Banco Ríos, S.A.       job_title=Compliance Lead
-```
-
-**Every link is run both ways round**, and the page says which of four situations you are in:
+Four possible answers:
 
 | | What it means |
 | --- | --- |
 | ✓ **Settled** | Only this direction returns rows. Nothing to decide. |
-| ⚠ **Backwards** | This direction matches nothing; flipping returns rows. Flip it. |
+| ⚠ **Backwards** | This direction matches nothing; flipping returns rows. Press **Flip direction**. |
 | ✎ **You decide** | Both directions join. No query can settle it, so read the row and pick the sentence that is true. |
 | ✗ **Neither** | The table has rows but no direction matches. The key columns or prefixes are wrong. |
 
-That last distinction matters. For an ordinary two-foreign-key link, **both directions join
-perfectly well**. The rows are identical; only the sentence changes. A tool that said "returns
-data, looks right" there would be lying to you. For an iBase `_LinkEnd` link, the end markers
-make direction real, and then it genuinely is settled.
+The rows show names rather than ids for a reason: `1001 → 2001` tells you nothing about whether
+the arrow points the right way, while "Avery Chen → Northwind Logistics" does. Pick which
+property to show with the **show as** dropdown on each record.
 
-Rename anything, tick records in or out, then **Save mapping** (the previous file is kept as
-`.bak`) and **Reload bridge** to apply it without restarting. If the set of record types
-changed, the page warns you that node ids moved and the graph needs reloading in Kineviz.
+**5. Check what each column becomes.** **Table data** shows real rows with the original column
+names against the names Kineviz will use, and what each one is: key, source end, target end, or
+property.
+
+![Table data showing employment_id as key, person_id as source end, organization_id as target end](docs/images/studio-table-data.jpg)
+
+Columns you have not mapped are greyed out and counted. An unmapped column is invisible in
+Kineviz, and the usual way to find that out is to go looking for it later.
+
+**6. Save mapping**, then **Reload bridge**. Save writes the YAML, keeping the previous file as
+`.bak`, and refuses to write a mapping that will not load. Reload applies it to the running
+bridge without a restart. If the set of record types changed, the page warns you that node ids
+moved and the graph needs reloading in Kineviz.
+
+**Show the file** prints the YAML at any point, so you can see exactly what your clicks are
+building.
 
 ### Or from the command line
 
