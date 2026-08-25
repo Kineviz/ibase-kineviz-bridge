@@ -19,6 +19,11 @@ from ibase_bridge.mssql_backend import BranchLimitExceeded, MssqlBackend
 from ibase_bridge.node_id import NodeIdCodec
 from ibase_bridge.query_processor import QueryProcessor
 
+try:
+    import pytest
+except ImportError:                        # the plain runner needs no pytest
+    pytest = None
+
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEMO = os.path.join(HERE, "config", "mapping.demo.yml")
 IBASE = os.path.join(HERE, "config", "mapping.ibase.yml")
@@ -639,12 +644,31 @@ def test_sample_rows_shows_where_a_column_ends_up():
 
 # ------------------------------------------- reaching the bridge from a browser
 
+class _Skip(Exception):
+    """This test needs something the bare suite deliberately does not install."""
+
+
 def _client(allow=None):
-    from fastapi.testclient import TestClient
+    # These four tests are the only ones that need the web layer. The rest of the
+    # suite runs with PyYAML alone, and that is worth protecting - a contributor
+    # should be able to clone and run the tests with nothing installed.
+    try:
+        from fastapi.testclient import TestClient
+    except ImportError:
+        raise _Skip("fastapi is not installed")
     import ibase_server
     args = ibase_server.parse_args(["--mapping", DEMO, "--compile-only"])
     state = ibase_server.build_state(args)
     return TestClient(ibase_server.create_app(state, studio=True, allow_origins=allow or []))
+
+
+def _needs_web():
+    try:
+        import fastapi  # noqa: F401
+    except ImportError:
+        if pytest is not None:
+            pytest.skip("fastapi is not installed; covered by the integration job")
+        raise _Skip("fastapi is not installed")
 
 
 def _preflight(c, origin):
@@ -655,6 +679,7 @@ def _preflight(c, origin):
 
 
 def test_kineviz_in_the_browser_may_reach_a_bridge_on_this_machine():
+    _needs_web()
     """Chrome sends an extra preflight before a public https page may reach a private
     address. Without an answer to it the request never completes, and the symptom is a
     schema that never loads with nothing to explain it."""
@@ -665,6 +690,7 @@ def test_kineviz_in_the_browser_may_reach_a_bridge_on_this_machine():
 
 
 def test_a_random_website_may_not():
+    _needs_web()
     """Answering that preflight relaxes the one thing stopping arbitrary pages from
     reaching this bridge, and the bridge has no password of its own."""
     r = _preflight(_client(), "https://evil.example.com")
@@ -673,11 +699,13 @@ def test_a_random_website_may_not():
 
 
 def test_the_schema_editor_on_this_machine_still_works():
+    _needs_web()
     r = _preflight(_client(), "http://localhost:7073")
     assert r.status_code == 200
 
 
 def test_a_self_hosted_kineviz_can_be_allowed():
+    _needs_web()
     r = _preflight(_client(allow=["https://kineviz.example.com"]), "https://kineviz.example.com")
     assert r.status_code == 200
     assert _preflight(_client(), "https://kineviz.example.com").status_code == 403
@@ -687,14 +715,27 @@ def _run_all():
     fns = [(n, f) for n, f in sorted(globals().items())
            if n.startswith("test_") and callable(f)]
     failed = 0
+    skipped = 0
     for name, fn in fns:
         try:
             fn()
             print("ok   - %s" % name)
+        except _Skip as exc:
+            skipped += 1
+            print("skip - %s (%s)" % (name, exc))
+        except BaseException as exc:
+            # pytest.skip() raises its own Skipped, which is not an Exception
+            # subclass. Treat it as a skip here too, so the same file runs both
+            # under pytest and on its own.
+            if type(exc).__name__ != "Skipped":
+                raise
+            skipped += 1
+            print("skip - %s (%s)" % (name, exc))
         except Exception as exc:
             failed += 1
             print("FAIL - %s: %s" % (name, exc))
-    print("\n%d passed, %d failed, %d total" % (len(fns) - failed, failed, len(fns)))
+    print("\n%d passed, %d skipped, %d failed, %d total"
+          % (len(fns) - failed - skipped, skipped, failed, len(fns)))
     return 1 if failed else 0
 
 

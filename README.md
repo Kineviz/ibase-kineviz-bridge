@@ -404,7 +404,7 @@ drawing a picture is acceptable; freezing an investigator's session is not. Chan
 ## Testing
 
 ```bash
-python3 tests/test_pipeline.py      # 50 tests, no database, no dependencies but PyYAML
+python3 tests/test_pipeline.py      # 54 tests, no database, no dependencies but PyYAML
 python3 -m pytest                   # same tests
 python3 scripts/probe_queries.py http://localhost:7073/ibase/demo
 ```

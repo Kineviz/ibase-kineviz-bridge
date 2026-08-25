@@ -3,13 +3,22 @@
 ## Running the tests
 
 ```bash
-python3 tests/test_pipeline.py     # 50 tests, no database, PyYAML is the only dependency
+python3 tests/test_pipeline.py     # 54 tests, no database, PyYAML is the only dependency
 python3 -m pytest                  # the same tests
 ```
 
 They run against the mapping files and a small fake connection, so the whole suite finishes in
-about a second on a machine with nothing installed. Keep it that way: a test that needs a
-database belongs in the integration job, not here.
+about a second on a machine with nothing installed. **Keep it that way.** A test that needs a
+database belongs in the integration job. A test that needs the web layer should skip when
+FastAPI is absent — the four browser-reachability tests show the pattern.
+
+If you add a dependency to a test, check it in a bare environment before pushing, or CI will
+find it for you:
+
+```bash
+uv venv /tmp/bare && VIRTUAL_ENV=/tmp/bare uv pip install PyYAML pytest
+/tmp/bare/bin/python -m pytest -q
+```
 
 For the real thing:
 
