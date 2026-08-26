@@ -14,3 +14,6 @@ discovery.json
 
 # the internal brief lives outside the repo now
 notes/
+
+# local scratch notes, not for the public repo
+.claude-notes.md
