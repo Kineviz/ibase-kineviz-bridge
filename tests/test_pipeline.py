@@ -786,6 +786,123 @@ def test_a_long_id_list_is_one_parameter_on_every_supported_version():
         assert ("nodes(" in sql) is (not openjson)
 
 
+# ------------------------------------------------------------- the audit log
+
+def _audit_client(tmp):
+    _needs_web()
+    from fastapi.testclient import TestClient
+    import ibase_server
+    args = ibase_server.parse_args(["--mapping", DEMO, "--compile-only",
+                                    "--audit-db", os.path.join(tmp, "audit.sqlite")])
+    state = ibase_server.build_state(args)
+    return TestClient(ibase_server.create_app(state)), state
+
+
+def test_audit_records_every_outcome_with_what_was_returned():
+    import sqlite3, tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        c, state = _audit_client(tmp)
+        hdr = {"Origin": "https://graphxr.kineviz.com", "X-Forwarded-User": "analyst7"}
+        c.post("/ibase/demo", json={"query": "CALL schema()"}, headers=hdr)
+        c.post("/ibase/demo", json={"query": "MATCH (p:Person) WHERE p.full_name =~ 'A' RETURN p"})
+
+        def boom(q):
+            raise RuntimeError("Login failed for user 'ibase_ro'")
+        state.processor.execute = boom
+        c.post("/ibase/demo", json={"query": "MATCH (p:Person) RETURN p LIMIT 1"})
+        rows = sqlite3.connect(state.audit.path).execute(
+            "SELECT status, result_type, remote_user, origin, response FROM audit ORDER BY id").fetchall()
+        assert [r[0] for r in rows] == ["ok", "refused", "error"]
+        assert rows[0][1] == "SCHEMA" and rows[0][2] == "analyst7"
+        assert rows[0][3] == "https://graphxr.kineviz.com"
+        assert '"Person"' in rows[0][4]          # the returned data itself, not a count
+
+
+def test_audit_withholds_the_result_when_it_cannot_write():
+    import tempfile
+    from ibase_bridge import audit
+    with tempfile.TemporaryDirectory() as tmp:
+        c, state = _audit_client(tmp)
+
+        def broken(**kw):
+            raise audit.AuditWriteFailed("disk full")
+        state.audit.record = broken
+        r = c.post("/ibase/demo", json={"query": "CALL schema()"}).json()
+        assert r["status"] == 1 and r["data"] is None
+        assert "withheld" in r["message"]
+
+
+def test_audit_records_the_rows_the_schema_editor_shows():
+    import sqlite3, tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        c, state = _audit_client(tmp)
+        import ibase_server
+        app = ibase_server.create_app(state, studio=True)
+        from fastapi.testclient import TestClient
+        c = TestClient(app)
+
+        class FakeConn:
+            server_major = 16
+            def run(self, sql, params=(), param_types=()):
+                return [{"employment_id": 9001, "person_id": 1001, "organization_id": 2001}]
+        state.connection = FakeConn()
+        r = c.post("/studio/api/sample", json={"draft": _studio_draft(),
+                                               "table": "Employment", "kind": "edge"})
+        assert r.status_code == 200 and r.json()["ok"], r.text
+        row = sqlite3.connect(state.audit.path).execute(
+            "SELECT source, query, row_count, response FROM audit").fetchone()
+        assert row[:3] == ("studio-sample", "Employment", 1)
+        assert "9001" in row[3]
+
+
+def test_audit_file_is_owner_only_and_append_only():
+    import sqlite3, stat, tempfile
+    from ibase_bridge import audit
+    with tempfile.TemporaryDirectory() as tmp:
+        log = audit.AuditLog(os.path.join(tmp, "a.sqlite"))
+        log.record(source="query", db="demo", query="q", status="ok", response={"x": 1})
+        assert stat.S_IMODE(os.stat(log.path).st_mode) == 0o600
+        conn = sqlite3.connect(log.path)
+        for sql in ("UPDATE audit SET query = 'other'", "DELETE FROM audit"):
+            try:
+                conn.execute(sql)
+            except sqlite3.DatabaseError as e:
+                assert "append-only" in str(e)
+            else:
+                raise AssertionError("%s should have been refused" % sql)
+
+
+def test_audit_verify_finds_the_row_that_was_edited():
+    import sqlite3, tempfile
+    from ibase_bridge import audit
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "a.sqlite")
+        log = audit.AuditLog(path)
+        for i in range(5):
+            log.record(source="query", db="demo", query="q%d" % i, status="ok",
+                       response={"rows": [i]})
+        log.close()
+        assert audit.verify(path) == {"ok": True, "rows": 5,
+                                      "last_hash": audit.verify(path)["last_hash"]}
+        # Reopening carries on the same chain rather than starting a new one.
+        audit.AuditLog(path).record(source="query", db="demo", query="q5", status="ok")
+        assert audit.verify(path)["rows"] == 6
+
+        # Someone with the file drops the guard and edits row 3.
+        conn = sqlite3.connect(path)
+        conn.execute("DROP TRIGGER audit_no_update")
+        conn.execute("UPDATE audit SET response = '{\"rows\":[99]}' WHERE id = 3")
+        conn.commit()
+        res = audit.verify(path)
+        assert not res["ok"] and res["bad_id"] == 3 and "changed" in res["reason"]
+
+        conn.execute("DROP TRIGGER audit_no_delete")
+        conn.execute("DELETE FROM audit WHERE id IN (1, 2, 3)")
+        conn.commit()
+        res = audit.verify(path)
+        assert not res["ok"] and res["bad_id"] == 4 and "removed" in res["reason"]
+
+
 def _run_all():
     fns = [(n, f) for n, f in sorted(globals().items())
            if n.startswith("test_") and callable(f)]

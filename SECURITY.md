@@ -29,6 +29,14 @@ could hold a credential, add it to `.gitignore` in the same commit.
 git-ignored, and it should stay that way: against a real database those logs contain the text
 of investigative queries.
 
+**The audit log is the exception, and it is off by default.** `--audit-db <file>` records every
+query, who sent it, and the full data returned, so the file holds the investigative records
+themselves. It is created owner-only (`0600`). Keep it on encrypted storage and back it up
+somewhere the bridge cannot write. If a row cannot be written, the bridge withholds the result
+rather than returning unrecorded data. `python -m ibase_bridge.audit verify <file>` detects a
+row that was edited, removed or reordered. It cannot detect the whole file being replaced. See
+the README's *Audit log* section.
+
 **Discovery output describes a customer's schema.** `mapping.proposed.yml` and
 `discovery.json` are git-ignored for the same reason.
 

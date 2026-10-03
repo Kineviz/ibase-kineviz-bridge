@@ -32,7 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse, Response
 
-from ibase_bridge import envelope, mapping as mapping_mod, query_log, tsql
+from ibase_bridge import audit, envelope, mapping as mapping_mod, query_log, tsql
 from ibase_bridge.logging_setup import setup_logging
 from ibase_bridge.mssql_backend import BranchLimitExceeded, MssqlBackend
 from ibase_bridge.node_id import NodeIdCodec
@@ -67,6 +67,9 @@ class BridgeState:
         self.last_query = None
         self.query_count = 0
         self.public_url = ""
+        # An AuditLog when --audit-db is given. Every query, and every row the
+        # studio shows, is recorded there before it is returned.
+        self.audit = None
         self.reload()
 
     def reload(self):
@@ -99,6 +102,9 @@ def build_state(args):
 
     name = args.name or os.path.splitext(os.path.basename(args.mapping))[0].replace("mapping.", "")
     state = BridgeState(args.mapping, connection=conn, id_state=args.id_state, db_name=name)
+    if getattr(args, "audit_db", None):
+        state.audit = audit.AuditLog(args.audit_db)
+        logger.info("audit log: %s", os.path.abspath(args.audit_db))
     warn = state.reload()
     if warn:
         logger.warning(warn)
@@ -204,6 +210,7 @@ def create_app(state, studio: bool = False, allow_origins=None):
         params = body.get("params") or {}
         if not q:
             return envelope.error("query parameter is required.")
+        outcome, status = None, "ok"
         try:
             outcome = state.processor.execute(q)
             state.query_count += 1
@@ -212,17 +219,32 @@ def create_app(state, studio: bool = False, allow_origins=None):
             elapsed = (time.time() - started) * 1000
             query_log.record(name, q, params, elapsed,
                              getattr(state.backend, "last_sql", ""), outcome)
-            return envelope.success(outcome)
-        except BranchLimitExceeded as exc:
+            response = envelope.success(outcome)
+        except (BranchLimitExceeded, tsql.UnsupportedByTSql) as exc:
             state.last_error = str(exc)
-            return envelope.error(str(exc))
-        except tsql.UnsupportedByTSql as exc:
-            state.last_error = str(exc)
-            return envelope.error(str(exc))
+            response, status = envelope.error(str(exc)), "refused"
         except Exception as exc:
             state.last_error = str(exc)
             logger.error("query failed: %s\n%s", exc, traceback.format_exc())
-            return envelope.error(str(exc))
+            response, status = envelope.error(str(exc)), "error"
+        if state.audit is not None:
+            try:
+                state.audit.record(
+                    source="query", db=name, query=q, params=params, status=status,
+                    # Every statement that ran, not just the last branch's.
+                    sql=(state.processor.last_sql
+                         or getattr(state.backend, "last_sql", None)),
+                    result_type=getattr(outcome, "type", None),
+                    error=response["message"] if status != "ok" else None,
+                    elapsed_ms=(time.time() - started) * 1000,
+                    response=response, client=audit.client_info(request))
+            except audit.AuditWriteFailed as exc:
+                # Fail closed: data that was not recorded is not handed out.
+                state.last_error = "audit log write failed: {}".format(exc)
+                logger.error(state.last_error)
+                return envelope.error("The audit log could not be written, so this result "
+                                      "was withheld. Tell whoever runs the bridge.")
+        return response
 
     return app
 
@@ -247,6 +269,11 @@ def parse_args(argv=None):
     p.add_argument("--studio", action="store_true",
                    help="also serve the schema editor at /studio, for naming links and "
                         "checking their direction against real rows")
+    p.add_argument("--audit-db", default=None, metavar="FILE",
+                   help="record every query, who sent it, the SQL it ran and everything it "
+                        "returned, in this SQLite file (e.g. logs/audit.sqlite). If a row "
+                        "cannot be written, the result is withheld. The file holds the "
+                        "returned records themselves: guard it like the database.")
     p.add_argument("--debug", action="store_true")
     return p.parse_args(argv)
 
@@ -274,6 +301,9 @@ def main():
     print("      Database Type:  KoreDB Via Proxy API")
     print("      Proxy API URL:  {}".format(url))
     print("\n  Works in Kineviz in the browser as well as in Desktop.")
+    if state.audit is not None:
+        print("\n  Audit log (every query and everything it returned):")
+        print("      {}".format(os.path.abspath(state.audit.path)))
     if args.studio:
         print("\n  Schema editor (name your links and check their direction):")
         print("      http://{}:{}/studio".format(host, args.port))

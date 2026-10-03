@@ -109,6 +109,9 @@ Person works for an Organisation or the reverse.
   words. Look there before the logs.
 - `logs/queries.jsonl` has one line per query with the Cypher **and** the SQL generated from
   it, side by side. That pairing answers most questions.
+- If the bridge was started with `--audit-db <file>`, that SQLite file holds every query, who
+  sent it, and the full data returned. `python -m ibase_bridge.audit tail <file>` shows the
+  latest rows. It contains real records: do not copy rows from it into a message.
 - `python3 scripts/probe_queries.py http://localhost:7073/ibase/demo` fires ~33 queries and
   reports what each returned, including that the unsupported ones were properly refused.
 

@@ -410,8 +410,68 @@ The bridge only reads. Two independent guards, because one is not enough:
    Server permission error.
 
 Never change an iBase schema with SQL. i2 directs administrators to use iBase Designer.
-Connection details come from an environment variable, never from the mapping file. Logs record
-table names, timings and counts, never record contents.
+Connection details come from an environment variable, never from the mapping file. The
+ordinary logs record table names, timings and counts, never record contents. The audit log
+below is the one exception, and it is off unless you turn it on.
+
+### Audit log: who asked for what, and what they got back
+
+For sites that must keep a record of every lookup, start the bridge with `--audit-db`:
+
+```bash
+python ibase_server.py --mapping config/mapping.demo.yml --audit-db logs/audit.sqlite
+```
+
+Every query then adds one row to that SQLite file (a single-file database you can open with
+`sqlite3` or any SQLite viewer):
+
+```text
+$ python -m ibase_bridge.audit tail logs/audit.sqlite
+     1  2026-10-03T15:51:46.808+00:00  query          127.0.0.1  alice  ok      n=3 e=0 r=-   MATCH (p:Person) RETURN p LIMIT 3
+     3  2026-10-03T15:51:46.865+00:00  query          127.0.0.1  bob    ok      n=- e=- r=1   MATCH (p:Person) RETURN count(p)
+     4  2026-10-03T15:51:46.873+00:00  query          127.0.0.1  bob    refused n=- e=- r=-   MATCH (p:Person) WHERE p.full_name =~ 'A' RETURN p
+     5  2026-10-03T15:52:06.216+00:00  studio-sample  127.0.0.1  -      ok      n=- e=- r=5   Person
+```
+
+(`n`, `e`, `r` are nodes, edges and table rows returned.) Each row holds:
+
+| Column | Example |
+| --- | --- |
+| when (UTC) | `2026-10-03T15:51:46.808+00:00` |
+| who | IP `127.0.0.1`; a name only if a login proxy in front sends one (see below) |
+| what they asked | `MATCH (p:Person) RETURN p LIMIT 3` |
+| the SQL that ran | `SELECT TOP (3) v0.[person_id] ...` |
+| outcome | `ok`, `refused` or `error`, with the message |
+| **everything sent back** | the full JSON reply: every node, edge and property |
+
+Rows the schema editor (`/studio`) shows are recorded too, as `studio-sample` and
+`studio-preview`.
+
+**If a row cannot be written, the data is not sent.** A full disk returns *"The audit log could
+not be written, so this result was withheld"* instead of the result.
+
+**Check that nobody changed it:**
+
+```text
+$ python -m ibase_bridge.audit verify logs/audit.sqlite
+ok: 6 rows, chain intact. Last hash 3073208...
+```
+
+If a row was edited, this prints `BROKEN at row 3: this row was changed after it was written`.
+If rows were deleted, it names the first row after the gap. This works because each row stores a
+fingerprint (a SHA-256 hash) of itself plus the row before it, so changing one row breaks every
+fingerprint after it. The file also refuses `UPDATE` and `DELETE`. Neither stops someone who can
+replace the whole file. If that matters, copy the file regularly to storage the bridge's account
+cannot write to, and write down the last hash `verify` printed. A later copy must still contain
+a row with that hash.
+
+**Who.** The bridge has no login of its own, so on its own it only knows the caller's IP
+address. If you put it behind a proxy that signs people in (as [SECURITY.md](SECURITY.md)
+advises for anything beyond one machine), the name the proxy sends in `X-Forwarded-User`,
+`X-Remote-User`, `X-Auth-Request-User`, `X-Forwarded-Email` or `Remote-User` is recorded.
+
+**Guard the file like the database.** It holds the records people looked at, not just the
+queries. It is created readable by its owner only (`-rw-------`), and `logs/` is git-ignored.
 
 Reads use `READ UNCOMMITTED` so that a long query never blocks, and is never blocked by,
 someone editing records in iBase. The cost is that a half-written record can be read, which for

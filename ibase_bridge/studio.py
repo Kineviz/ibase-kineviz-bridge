@@ -26,6 +26,14 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+try:
+    # At module level, not inside build_router: with postponed annotations FastAPI
+    # resolves `request: Request` against this module's globals. Optional so the
+    # test suite still runs without the web layer installed.
+    from starlette.requests import Request
+except ImportError:  # pragma: no cover
+    Request = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -576,7 +584,32 @@ def build_router(state):
     from fastapi import APIRouter, Body
     from fastapi.responses import HTMLResponse
 
+    from . import audit
+
     router = APIRouter(prefix="/studio")
+
+    def audited(source, table, request, run):
+        """Run a studio lookup that returns real rows, recording it first if auditing is on."""
+        import time
+        started = time.time()
+        result = run()
+        if getattr(state, "audit", None) is None:
+            return result
+        ok = isinstance(result, dict) and result.get("ok", True)
+        try:
+            state.audit.record(
+                source=source, db=getattr(state, "db_name", None), query=table,
+                status="ok" if ok else "error",
+                sql=result.get("sql") if isinstance(result, dict) else None,
+                error=None if ok else result.get("error"),
+                elapsed_ms=(time.time() - started) * 1000,
+                response=result, client=audit.client_info(request))
+        except audit.AuditWriteFailed as exc:
+            state.last_error = "audit log write failed: {}".format(exc)
+            logger.error(state.last_error)
+            return {"ok": False, "error": "The audit log could not be written, so these "
+                                          "rows were withheld."}
+        return result
 
     @router.get("", response_class=HTMLResponse)
     @router.get("/", response_class=HTMLResponse)
@@ -593,13 +626,14 @@ def build_router(state):
         return _status(state)
 
     @router.post("/api/sample")
-    async def sample(body: Dict[str, Any] = Body(...)):
+    async def sample(request: Request, body: Dict[str, Any] = Body(...)):
         if state.connection is None:
             return {"ok": False, "error": "not connected to a database"}
         if body.get("draft"):
             state.draft = body["draft"]
-        return sample_rows(state.draft, body.get("table"), body.get("kind", "node"),
-                           state.connection)
+        return audited("studio-sample", body.get("table"), request,
+                       lambda: sample_rows(state.draft, body.get("table"),
+                                           body.get("kind", "node"), state.connection))
 
     @router.post("/api/test-connection")
     async def test_conn(body: Dict[str, Any] = Body(...)):
@@ -685,12 +719,13 @@ def build_router(state):
         return {"ok": False, "error": "no link called {!r}".format(table)}
 
     @router.post("/api/preview")
-    async def preview(body: Dict[str, Any] = Body(...)):
+    async def preview(request: Request, body: Dict[str, Any] = Body(...)):
         if state.connection is None:
             return {"ok": False, "error": "not connected to a database"}
         if body.get("draft"):
             state.draft = body["draft"]
-        return preview_edge(state.draft, body.get("table"), state.connection)
+        return audited("studio-preview", body.get("table"), request,
+                       lambda: preview_edge(state.draft, body.get("table"), state.connection))
 
     @router.post("/api/save")
     async def save(body: Dict[str, Any] = Body(...)):
