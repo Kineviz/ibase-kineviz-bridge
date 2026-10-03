@@ -104,6 +104,10 @@ cmd_up() {
     fi
     ok "installed"
   fi
+  # The test suite's web tests need an HTTP client library; the bridge itself does not.
+  python -c "import httpx" 2>/dev/null \
+    || (command -v uv >/dev/null && uv pip install -q httpx 2>/dev/null) \
+    || pip install -q httpx 2>/dev/null || warn "could not install httpx; the web tests will be skipped"
   python -c "import pyodbc,sys; sys.exit(0 if pyodbc.drivers() else 1)" 2>/dev/null \
     || die "no ODBC driver found. Install msodbcsql18 (see above), then run ./setup again."
 

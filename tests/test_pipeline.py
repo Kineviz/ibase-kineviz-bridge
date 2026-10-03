@@ -652,10 +652,8 @@ def _client(allow=None):
     # These four tests are the only ones that need the web layer. The rest of the
     # suite runs with PyYAML alone, and that is worth protecting - a contributor
     # should be able to clone and run the tests with nothing installed.
-    try:
-        from fastapi.testclient import TestClient
-    except ImportError:
-        raise _Skip("fastapi is not installed")
+    _needs_web()
+    from fastapi.testclient import TestClient
     import ibase_server
     args = ibase_server.parse_args(["--mapping", DEMO, "--compile-only"])
     state = ibase_server.build_state(args)
@@ -663,12 +661,15 @@ def _client(allow=None):
 
 
 def _needs_web():
+    # Any exception, not only ImportError: with fastapi present but no HTTP client
+    # library, Starlette's test client raises RuntimeError on import.
     try:
-        import fastapi  # noqa: F401
-    except ImportError:
+        from fastapi.testclient import TestClient  # noqa: F401
+    except Exception:
+        why = "fastapi and httpx are not both installed (pip install fastapi httpx)"
         if pytest is not None:
-            pytest.skip("fastapi is not installed; covered by the integration job")
-        raise _Skip("fastapi is not installed")
+            pytest.skip(why + "; covered by the integration job")
+        raise _Skip(why)
 
 
 def _preflight(c, origin):

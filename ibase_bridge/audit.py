@@ -189,6 +189,9 @@ def main(argv=None):
     t.add_argument("path")
     t.add_argument("-n", type=int, default=20)
     args = p.parse_args(argv)
+    if not os.path.isfile(args.path):
+        print("No audit log at {}. Is that the file given to --audit-db?".format(args.path))
+        return 2
 
     if args.cmd == "verify":
         res = verify(args.path)

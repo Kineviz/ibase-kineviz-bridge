@@ -18,7 +18,7 @@ graph database to Kineviz. Your job is to stand it up so a person can explore th
 ```bash
 ./setup            # SQL Server, both demo databases, a read-only login, Python deps
 ./setup status     # what is running right now
-python3 tests/test_pipeline.py    # 50 tests, no database needed
+python3 tests/test_pipeline.py    # 64 tests, no database needed
 ```
 
 `./setup` is safe to re-run; every step checks before it acts. It generates its own passwords
